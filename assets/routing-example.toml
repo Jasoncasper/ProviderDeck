@@ -1,0 +1,60 @@
+# ProviderDeck 路由配置示例
+
+[fallback]
+enabled = true
+max_retries = 3
+retry_delay_ms = 1000
+
+# 默认 fallback 留空；官方模型走 Codex 原生直连，不进入 ProviderDeck 路由。
+fallback_provider = ""
+
+# 多模态回退：当选中模型不支持图片时，自动路由到此模型
+vision_fallback_model = ""
+
+# ===== 模型配置 =====
+
+[[providers]]
+id = "gpt-4o-mini"
+name = "GPT-4o Mini"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-your-key-here"
+protocol = "chat_completions"
+enabled = true
+supports_vision = true
+
+[[providers]]
+id = "gpt-4o"
+name = "GPT-4o"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-your-key-here"
+protocol = "chat_completions"
+enabled = true
+supports_vision = true
+
+[[providers]]
+id = "gpt-3.5-turbo"
+name = "GPT-3.5 Turbo"
+base_url = "https://relay.example.com/v1"
+api_key = "relay-key"
+protocol = "chat_completions"
+enabled = true
+supports_vision = false
+
+[[providers]]
+id = "claude-3-opus"
+name = "Claude 3 Opus"
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-key"
+protocol = "anthropic"
+enabled = true
+supports_vision = true
+
+[[providers]]
+id = "deepseek-v4"
+name = "DeepSeek V4"
+base_url = "https://api.deepseek.com"
+api_key = "sk-your-key"
+protocol = "chat_completions"
+enabled = true
+supports_vision = false
+target_model = "deepseek-chat"  # DeepSeek API 只认 deepseek-chat

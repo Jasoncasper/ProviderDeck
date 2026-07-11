@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/providerdeck-manager
+
+      - name: Build frontend
+        run: npm run vite:build
+        working-directory: apps/providerdeck-manager
+
+      - name: Build release (aarch64)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build release (x86_64)
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Package DMG (aarch64)
+        run: bash scripts/installer/macos/package-dmg.sh "${{ github.ref_name }}" aarch64
+        env:
+          BINARY_DIR: target/aarch64-apple-darwin/release
+
+      - name: Package DMG (x86_64)
+        run: bash scripts/installer/macos/package-dmg.sh "${{ github.ref_name }}" x86_64
+        env:
+          BINARY_DIR: target/x86_64-apple-darwin/release
+
+      - name: Generate latest.json
+        run: |
+          VERSION="${{ github.ref_name }}"
+          bash scripts/generate-latest-json.sh "$VERSION" "${{ github.repository }}" "" > dist/macos/latest.json
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/macos/ProviderDeck-*.dmg
+            dist/macos/latest.json

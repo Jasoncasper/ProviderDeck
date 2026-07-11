@@ -1,0 +1,20 @@
+[package]
+name = "providerdeck-launcher"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "providerdeck"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+providerdeck-core = { path = "../../crates/providerdeck-core" }
+directories.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+winresource.workspace = true
