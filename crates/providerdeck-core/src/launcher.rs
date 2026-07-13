@@ -125,6 +125,20 @@ pub trait LaunchHooks: Send + Sync {
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
+    async fn repair_codex_config(&self, _helper_port: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn start_transport_prearm(
+        &self,
+        _debug_port: u16,
+        _helper_port: u16,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn finish_transport_prearm(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn stop_transport_prearm(&self) {}
     async fn launch_codex(
         &self,
         app_dir: &Path,
@@ -164,6 +178,7 @@ pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
+    transport_prearm: Mutex<Option<tokio::task::JoinHandle<anyhow::Result<()>>>>,
 }
 
 struct HelperRuntime {
@@ -200,6 +215,10 @@ where
         if settings.enhancements_enabled {
             hooks.start_helper(helper_port).await?;
             helper_started = true;
+            hooks.repair_codex_config(helper_port).await?;
+            hooks
+                .start_transport_prearm(debug_port, helper_port)
+                .await?;
         }
 
         let launch = hooks
@@ -208,6 +227,7 @@ where
         launched = Some(launch.clone());
 
         if settings.enhancements_enabled {
+            hooks.finish_transport_prearm().await?;
             match hooks.bridge_context(debug_port).await? {
                 Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await?,
                 None => hooks.inject(debug_port, helper_port).await?,
@@ -240,6 +260,7 @@ where
     match result {
         Ok(handle) => Ok(handle),
         Err(error) => {
+            hooks.stop_transport_prearm().await;
             if helper_started {
                 hooks.shutdown_helper(helper_port).await;
             }
@@ -344,6 +365,62 @@ impl LaunchHooks for DefaultLaunchHooks {
             task,
         });
         Ok(())
+    }
+
+    async fn repair_codex_config(&self, helper_port: u16) -> anyhow::Result<()> {
+        let codex_home = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".codex")))
+            .ok_or_else(|| anyhow::anyhow!("unable to resolve Codex home directory"))?;
+        let config_path = codex_home.join("config.toml");
+        let routing_path = crate::paths::default_app_state_dir().join("routing.toml");
+        if crate::codex_config::repair_providerdeck_selection(
+            &config_path,
+            &routing_path,
+            helper_port,
+        )? {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex_config.providerdeck_selection_repaired",
+                serde_json::json!({
+                    "config_path": config_path,
+                    "helper_port": helper_port
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    async fn start_transport_prearm(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+    ) -> anyhow::Result<()> {
+        if let Some(task) = self.transport_prearm.lock().await.take() {
+            task.abort();
+        }
+        let task =
+            tokio::spawn(
+                async move { retry_renderer_transport_prearm(debug_port, helper_port).await },
+            );
+        *self.transport_prearm.lock().await = Some(task);
+        Ok(())
+    }
+
+    async fn finish_transport_prearm(&self) -> anyhow::Result<()> {
+        let task = self
+            .transport_prearm
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("renderer transport prearm task was not started"))?;
+        task.await
+            .context("renderer transport prearm task did not complete")?
+    }
+
+    async fn stop_transport_prearm(&self) {
+        if let Some(task) = self.transport_prearm.lock().await.take() {
+            task.abort();
+        }
     }
 
     async fn launch_codex(
@@ -546,6 +623,51 @@ async fn handle_helper_connection(
             "body_bytes": request_body.len()
         }),
     );
+
+    if let Some(provider_id) = crate::protocol_proxy::parse_provider_models_path(path)
+        && method == "GET"
+    {
+        if !crate::local_auth::authorization_matches(
+            &request,
+            crate::local_auth::runtime_bearer_token(),
+        ) {
+            write_http_response(
+                &mut stream,
+                "401 Unauthorized",
+                "application/json; charset=utf-8",
+                br#"{"status":"failed","message":"invalid runtime bearer token"}"#,
+            )
+            .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+        let catalog = crate::provider_catalog::catalog_from_path(
+            &crate::paths::default_app_state_dir().join("routing.toml"),
+            crate::ports::active_helper_port(),
+            crate::local_auth::runtime_bearer_token(),
+        )?;
+        let Some(payload) = crate::provider_catalog::provider_models_payload(&catalog, provider_id)
+        else {
+            write_http_response(
+                &mut stream,
+                "404 Not Found",
+                "application/json; charset=utf-8",
+                br#"{"status":"failed","message":"unknown provider"}"#,
+            )
+            .await?;
+            stream.shutdown().await?;
+            return Ok(());
+        };
+        write_http_response(
+            &mut stream,
+            "200 OK",
+            "application/json; charset=utf-8",
+            &serde_json::to_vec(&payload)?,
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
 
     if let Some(provider_id) = crate::protocol_proxy::parse_provider_proxy_path(path)
         && method == "POST"
@@ -952,7 +1074,12 @@ pub fn build_packaged_activation(
 
 pub fn codex_process_environment() -> HashMap<String, String> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    codex_process_environment_from(&env, crate::proxy::detect_system_proxy)
+    let mut env = codex_process_environment_from(&env, crate::proxy::detect_system_proxy);
+    env.insert(
+        crate::codex_config::RUNTIME_TOKEN_ENV.to_string(),
+        crate::local_auth::runtime_bearer_token().to_string(),
+    );
+    env
 }
 
 pub fn codex_process_environment_from(
@@ -960,31 +1087,95 @@ pub fn codex_process_environment_from(
     detect_system_proxy: impl FnOnce() -> Option<String>,
 ) -> HashMap<String, String> {
     let mut env = env.clone();
-    if crate::proxy::has_proxy_environment(&env) {
-        return env;
+    if !crate::proxy::has_proxy_environment(&env) {
+        if let Some(proxy) = detect_system_proxy() {
+            env.entry("HTTP_PROXY".to_string())
+                .or_insert_with(|| proxy.clone());
+            env.entry("HTTPS_PROXY".to_string())
+                .or_insert_with(|| proxy.clone());
+            env.entry("ALL_PROXY".to_string()).or_insert(proxy);
+        }
     }
-    if let Some(proxy) = detect_system_proxy() {
-        env.entry("HTTP_PROXY".to_string())
-            .or_insert_with(|| proxy.clone());
-        env.entry("HTTPS_PROXY".to_string())
-            .or_insert_with(|| proxy.clone());
-        env.entry("ALL_PROXY".to_string()).or_insert(proxy);
+    if crate::proxy::has_proxy_environment(&env) {
+        ensure_loopback_no_proxy(&mut env);
     }
     env
+}
+
+fn ensure_loopback_no_proxy(env: &mut HashMap<String, String>) {
+    let key = if env.contains_key("NO_PROXY") {
+        "NO_PROXY"
+    } else if env.contains_key("no_proxy") {
+        "no_proxy"
+    } else {
+        "NO_PROXY"
+    };
+    let value = env.entry(key.to_string()).or_default();
+    for host in ["localhost", "127.0.0.1", "::1"] {
+        if value
+            .split(',')
+            .map(str::trim)
+            .any(|item| item.eq_ignore_ascii_case(host))
+        {
+            continue;
+        }
+        if !value.is_empty() {
+            value.push(',');
+        }
+        value.push_str(host);
+    }
 }
 
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let mut last_error = None;
     for _ in 0..20 {
-        match try_inject(debug_port, helper_port).await {
-            Ok(()) => return Ok(()),
+        match try_install_bridge(debug_port, helper_port).await {
+            Ok(_) if renderer_bridge_health_ok(debug_port).await.unwrap_or(false) => return Ok(()),
+            Ok(_) => {
+                last_error = Some(anyhow::anyhow!(
+                    "renderer transport or ProviderDeck bridge is not ready"
+                ))
+            }
             Err(error) => {
                 last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
+}
+
+async fn retry_renderer_transport_prearm(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut last_error = None;
+    while tokio::time::Instant::now() < deadline {
+        match crate::cdp::browser_websocket_url(debug_port).await {
+            Ok(websocket_url) => {
+                return crate::bridge::prearm_renderer_bridge_interceptor(&websocket_url).await;
+            }
+            Err(error) => last_error = Some(error),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("CDP browser endpoint did not become ready")))
+}
+
+async fn renderer_bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+    if !bridge_health_ok(debug_port).await? {
+        return Ok(false);
+    }
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = crate::cdp::pick_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    let result = crate::bridge::evaluate_script(
+        websocket_url,
+        "window.__providerDeckTransportPatchLoaded===true && window.__providerDeckInstalled===true && typeof window.__providerDeckInterceptPostMessage==='function'",
+    )
+    .await?;
+    Ok(runtime_evaluate_result_is_true(&result))
 }
 
 pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> bool {
@@ -1054,16 +1245,7 @@ async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
     Ok(runtime_evaluate_result_is_true(&result))
 }
 
-fn runtime_evaluate_result_is_true(result: &Value) -> bool {
-    result
-        .get("result")
-        .and_then(|result| result.get("result"))
-        .and_then(|result| result.get("value"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+async fn try_install_bridge(debug_port: u16, helper_port: u16) -> anyhow::Result<String> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_page_target(&targets)?;
     let websocket_url = target
@@ -1086,7 +1268,17 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         }),
         &[script],
     )
-    .await
+    .await?;
+    Ok(websocket_url.to_string())
+}
+
+fn runtime_evaluate_result_is_true(result: &Value) -> bool {
+    result
+        .get("result")
+        .and_then(|result| result.get("result"))
+        .and_then(|result| result.get("value"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub fn build_macos_open_command(

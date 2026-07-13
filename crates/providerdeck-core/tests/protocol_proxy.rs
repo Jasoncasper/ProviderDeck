@@ -2,7 +2,8 @@ use providerdeck_core::protocol_proxy::{
     ChatSseToResponsesConverter, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
     chat_sse_to_responses_sse_with_request, is_models_proxy_path, models_url,
-    parse_provider_proxy_path, responses_to_chat_completions, scope_request_for_provider,
+    parse_provider_models_path, parse_provider_proxy_path, responses_to_chat_completions,
+    scope_request_for_provider,
 };
 use serde_json::json;
 
@@ -1078,6 +1079,18 @@ fn provider_proxy_path_extracts_only_valid_provider_ids() {
     );
     assert_eq!(parse_provider_proxy_path("/provider/../v1/responses"), None);
     assert_eq!(parse_provider_proxy_path("/v1/responses"), None);
+}
+
+#[test]
+fn provider_models_path_extracts_scoped_provider_id() {
+    assert_eq!(
+        parse_provider_models_path("/provider/team_proxy/v1/models?client_version=1"),
+        Some("team_proxy")
+    );
+    assert_eq!(
+        parse_provider_models_path("/provider/team_proxy/v1/responses"),
+        None
+    );
 }
 
 #[test]

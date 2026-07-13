@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::router::config::SmartRouterConfig;
 
 pub const SELECTION_PREFIX: &str = "providerdeck:";
+const RUNTIME_PROVIDER_PREFIX: &str = "providerdeck-";
+const ENCODED_PROVIDER_PREFIX: &str = "pdhex-";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,7 +86,7 @@ pub fn catalog_from_router_config(
         providers.insert(
             provider.id.clone(),
             RuntimeProvider {
-                runtime_provider_id: format!("providerdeck-{}", provider.id),
+                runtime_provider_id: runtime_provider_id(&provider.id)?,
                 name: provider.name.clone(),
                 base_url: provider_helper_base_url(helper_port, &provider.id)?,
                 bearer_token: bearer_token.to_string(),
@@ -96,6 +98,21 @@ pub fn catalog_from_router_config(
         models,
         providers,
     })
+}
+
+pub fn runtime_provider_id(provider_id: &str) -> anyhow::Result<String> {
+    validate_provider_id(provider_id)?;
+    if !provider_id.contains('.') && !provider_id.starts_with(ENCODED_PROVIDER_PREFIX) {
+        return Ok(format!("{RUNTIME_PROVIDER_PREFIX}{provider_id}"));
+    }
+
+    let encoded = provider_id
+        .bytes()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(
+        "{RUNTIME_PROVIDER_PREFIX}{ENCODED_PROVIDER_PREFIX}{encoded}"
+    ))
 }
 
 pub fn catalog_from_path(
@@ -113,6 +130,23 @@ pub fn catalog_from_path(
         helper_port,
         bearer_token,
     )
+}
+
+pub fn provider_models_payload(
+    catalog: &ProviderDeckCatalog,
+    provider_id: &str,
+) -> Option<serde_json::Value> {
+    if !catalog
+        .models
+        .iter()
+        .any(|model| model.provider_id == provider_id)
+    {
+        return None;
+    }
+    // Codex custom providers use their own model-catalog schema here, not the
+    // OpenAI `/v1/models` list shape. An empty Codex catalog keeps its built-in
+    // fallback metadata for the exact model selected by ProviderDeck.
+    Some(serde_json::json!({ "models": [] }))
 }
 
 pub fn scoped_selection(provider_id: &str, model: &str) -> anyhow::Result<String> {

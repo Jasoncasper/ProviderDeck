@@ -2,6 +2,7 @@ pub mod app_paths;
 pub mod assets;
 pub mod bridge;
 pub mod cdp;
+pub mod codex_config;
 pub mod diagnostic_log;
 pub mod http_client;
 pub mod image_compressor;

@@ -1,7 +1,7 @@
 use providerdeck_core::watcher::{
     build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
     disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    macos_app_process_ids, watcher_disabled_flag,
+    macos_app_process_ids, wait_for_process_shutdown_with, watcher_disabled_flag,
 };
 
 #[test]
@@ -105,4 +105,22 @@ fn launcher_process_filter_protects_current_process_ancestry() {
     ];
 
     assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
+}
+
+#[test]
+fn restart_waits_until_all_chatgpt_processes_exit() {
+    let observations = std::cell::RefCell::new(std::collections::VecDeque::from([
+        vec![101, 102],
+        vec![102],
+        vec![],
+    ]));
+    let sleeps = std::cell::Cell::new(0);
+
+    let stopped = wait_for_process_shutdown_with(
+        || observations.borrow_mut().pop_front().unwrap_or_default(),
+        |_| sleeps.set(sleeps.get() + 1),
+    );
+
+    assert!(stopped);
+    assert_eq!(sleeps.get(), 2);
 }

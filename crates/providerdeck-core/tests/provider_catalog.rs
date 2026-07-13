@@ -1,5 +1,6 @@
 use providerdeck_core::provider_catalog::{
-    catalog_from_router_config, parse_scoped_selection, provider_helper_base_url, scoped_selection,
+    catalog_from_router_config, parse_scoped_selection, provider_helper_base_url,
+    provider_models_payload, runtime_provider_id, scoped_selection,
 };
 use providerdeck_core::router::config::{ProviderProtocol, SmartProvider, SmartRouterConfig};
 
@@ -55,6 +56,42 @@ fn helper_base_url_is_scoped_to_one_provider() {
 }
 
 #[test]
+fn runtime_provider_ids_encode_dots_without_colliding_with_reserved_raw_ids() {
+    assert_eq!(
+        runtime_provider_id("deepseek-v4-pro").unwrap(),
+        "providerdeck-deepseek-v4-pro"
+    );
+    assert_eq!(
+        runtime_provider_id("glm-5.2").unwrap(),
+        "providerdeck-pdhex-676c6d2d352e32"
+    );
+    assert_eq!(
+        runtime_provider_id("pdhex-676c6d2d352e32").unwrap(),
+        "providerdeck-pdhex-70646865782d3637366336643264333532653332"
+    );
+}
+
+#[test]
+fn runtime_catalog_uses_toml_safe_runtime_provider_id_for_dotted_provider() {
+    let config = SmartRouterConfig {
+        providers: vec![provider("glm-5.2", true, "glm-5.2", "upstream-secret")],
+        ..SmartRouterConfig::default()
+    };
+
+    let catalog = catalog_from_router_config(&config, 57322, "runtime-token").unwrap();
+
+    assert_eq!(
+        catalog.providers["glm-5.2"].runtime_provider_id,
+        "providerdeck-pdhex-676c6d2d352e32"
+    );
+    assert!(
+        !catalog.providers["glm-5.2"]
+            .runtime_provider_id
+            .contains('.')
+    );
+}
+
+#[test]
 fn runtime_catalog_excludes_disabled_providers_and_api_keys() {
     let enabled = provider("team_proxy", true, "vendor:model:v2", "upstream-secret");
     let disabled = provider("disabled", false, "disabled-model", "disabled-secret");
@@ -78,4 +115,22 @@ fn runtime_catalog_excludes_disabled_providers_and_api_keys() {
     assert!(!catalog.providers.contains_key("disabled"));
     assert!(!serialized.contains("upstream-secret"));
     assert!(!serialized.contains("disabled-secret"));
+}
+
+#[test]
+fn scoped_provider_models_payload_matches_codex_catalog_contract() {
+    let config = SmartRouterConfig {
+        providers: vec![provider(
+            "team_proxy",
+            true,
+            "vendor:model:v2",
+            "upstream-secret",
+        )],
+        ..SmartRouterConfig::default()
+    };
+    let catalog = catalog_from_router_config(&config, 57322, "runtime-token").unwrap();
+
+    let payload = provider_models_payload(&catalog, "team_proxy").unwrap();
+
+    assert_eq!(payload, serde_json::json!({ "models": [] }));
 }

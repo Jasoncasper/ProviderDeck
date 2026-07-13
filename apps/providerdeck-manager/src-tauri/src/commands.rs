@@ -208,7 +208,15 @@ pub fn launch_providerdeck(request: LaunchRequest) -> CommandResult<Value> {
 #[tauri::command]
 pub fn restart_providerdeck(request: LaunchRequest) -> CommandResult<Value> {
     providerdeck_core::watcher::stop_launcher_processes();
-    providerdeck_core::watcher::stop_codex_processes();
+    if !providerdeck_core::watcher::stop_codex_processes() {
+        return failed(
+            "ChatGPT/Codex 尚未完全退出，请稍后重试。",
+            json!({
+                "debugPort": request.debug_port,
+                "helperPort": request.helper_port
+            }),
+        );
+    }
     spawn_providerdeck_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
 }
 
@@ -1302,5 +1310,14 @@ mod tests {
         assert_eq!(value["errorCode"], "command_failed");
         assert_eq!(value["rolledBack"], false);
         assert_eq!(value["recoveryRequired"], false);
+    }
+
+    #[test]
+    fn restart_stops_when_chatgpt_does_not_exit() {
+        let source = include_str!("commands.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+
+        assert!(production.contains("if !providerdeck_core::watcher::stop_codex_processes()"));
+        assert!(production.contains("ChatGPT/Codex 尚未完全退出"));
     }
 }

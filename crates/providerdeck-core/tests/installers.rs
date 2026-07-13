@@ -55,17 +55,13 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
 
     assert!(silent.app_path.ends_with("ProviderDeck.app"));
     assert!(manager.app_path.ends_with("ProviderDeck.app"));
-    assert!(
-        silent
-            .info_plist
-            .contains("<string>providerdeck-manager</string>")
-    );
+    assert!(silent.info_plist.contains("<string>providerdeck</string>"));
     assert!(
         manager
             .info_plist
             .contains("<string>providerdeck-manager</string>")
     );
-    assert!(silent.launch_script.contains("providerdeck-manager"));
+    assert!(silent.launch_script.contains("providerdeck"));
     assert!(manager.launch_script.contains("providerdeck-manager"));
 }
 
@@ -84,9 +80,7 @@ fn companion_binary_path_resolves_macos_silent_app_next_to_manager_app() {
 
     assert_eq!(
         companion,
-        std::path::PathBuf::from(
-            "/Applications/ProviderDeck.app/Contents/MacOS/providerdeck-manager"
-        )
+        std::path::PathBuf::from("/Applications/ProviderDeck.app/Contents/MacOS/providerdeck")
     );
 }
 

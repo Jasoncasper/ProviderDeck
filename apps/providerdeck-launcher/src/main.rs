@@ -153,6 +153,28 @@ impl LaunchHooks for LauncherHooks {
         self.core.start_helper(helper_port).await
     }
 
+    async fn repair_codex_config(&self, helper_port: u16) -> anyhow::Result<()> {
+        self.core.repair_codex_config(helper_port).await
+    }
+
+    async fn start_transport_prearm(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+    ) -> anyhow::Result<()> {
+        self.core
+            .start_transport_prearm(debug_port, helper_port)
+            .await
+    }
+
+    async fn finish_transport_prearm(&self) -> anyhow::Result<()> {
+        self.core.finish_transport_prearm().await
+    }
+
+    async fn stop_transport_prearm(&self) {
+        self.core.stop_transport_prearm().await;
+    }
+
     async fn launch_codex(
         &self,
         app_dir: &Path,
@@ -173,9 +195,9 @@ impl LaunchHooks for LauncherHooks {
         &self,
         debug_port: u16,
         helper_port: u16,
-        ctx: BridgeContext,
+        _ctx: BridgeContext,
     ) -> anyhow::Result<()> {
-        inject_with_context(debug_port, helper_port, ctx, self.runtime.clone()).await
+        self.core.inject(debug_port, helper_port).await
     }
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
@@ -265,52 +287,6 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 }
 
-async fn inject_with_context(
-    debug_port: u16,
-    helper_port: u16,
-    ctx: BridgeContext,
-    runtime: Arc<LauncherRuntimeService>,
-) -> anyhow::Result<()> {
-    let mut last_error = None;
-    for _ in 0..20 {
-        match try_inject_with_context(debug_port, helper_port, ctx.clone(), runtime.clone()).await {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        }
-    }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Codex injection failed")))
-}
-
-async fn try_inject_with_context(
-    debug_port: u16,
-    helper_port: u16,
-    ctx: BridgeContext,
-    _runtime: Arc<LauncherRuntimeService>,
-) -> anyhow::Result<()> {
-    let targets = providerdeck_core::cdp::list_targets(debug_port).await?;
-    let target = providerdeck_core::cdp::pick_page_target(&targets)?;
-    let websocket_url = target
-        .web_socket_debugger_url
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let script = providerdeck_core::assets::injection_script(helper_port);
-    providerdeck_core::bridge::install_bridge(
-        websocket_url,
-        providerdeck_core::bridge::BRIDGE_BINDING_NAME,
-        Arc::new(move |path, payload| {
-            let ctx = ctx.clone();
-            Box::pin(async move {
-                Ok(providerdeck_core::routes::handle_bridge_request(ctx, &path, payload).await)
-            })
-        }),
-        &[script],
-    )
-    .await
-}
-
 fn open_url(url: &str) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
@@ -389,6 +365,15 @@ mod tests {
         assert!(source.contains("acquire_single_instance_guard()?"));
         assert!(source.contains("LAUNCHER_GUARD_PORT"));
         assert!(source.contains("launcher.already_running"));
+    }
+
+    #[test]
+    fn launcher_delegates_codex_config_repair_to_core_hooks() {
+        let source = include_str!("main.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+
+        assert!(production.contains("async fn repair_codex_config"));
+        assert!(production.contains("self.core.repair_codex_config(helper_port).await"));
     }
 
     #[test]

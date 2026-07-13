@@ -7,7 +7,7 @@ pub mod windows;
 
 pub const SILENT_NAME: &str = "ProviderDeck";
 pub const MANAGER_NAME: &str = "ProviderDeck";
-pub const SILENT_BINARY: &str = "providerdeck-manager";
+pub const SILENT_BINARY: &str = "providerdeck";
 pub const MANAGER_BINARY: &str = "providerdeck-manager";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -29,13 +29,21 @@ const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
 ];
 
 pub fn parse_provider_proxy_path(path: &str) -> Option<&str> {
+    parse_provider_endpoint_path(path, "responses")
+}
+
+pub fn parse_provider_models_path(path: &str) -> Option<&str> {
+    parse_provider_endpoint_path(path, "models")
+}
+
+fn parse_provider_endpoint_path<'a>(path: &'a str, endpoint: &str) -> Option<&'a str> {
     let path = path.split('?').next().unwrap_or(path);
     let mut parts = path.trim_matches('/').split('/');
     if parts.next()? != "provider" {
         return None;
     }
     let provider_id = parts.next()?;
-    if parts.next()? != "v1" || parts.next()? != "responses" || parts.next().is_some() {
+    if parts.next()? != "v1" || parts.next()? != endpoint || parts.next().is_some() {
         return None;
     }
     crate::provider_catalog::validate_provider_id(provider_id).ok()?;

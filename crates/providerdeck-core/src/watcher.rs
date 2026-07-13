@@ -108,6 +108,22 @@ pub fn macos_app_process_ids<'a, 'b>(
         .collect()
 }
 
+pub fn wait_for_process_shutdown_with(
+    mut process_ids: impl FnMut() -> Vec<u32>,
+    mut sleep: impl FnMut(Duration),
+) -> bool {
+    const MAX_ATTEMPTS: usize = 20;
+    for attempt in 0..MAX_ATTEMPTS {
+        if process_ids().is_empty() {
+            return true;
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            sleep(Duration::from_millis(250));
+        }
+    }
+    false
+}
+
 pub fn filter_killable_launcher_processes<'a>(
     processes: impl IntoIterator<Item = (u32, u32, &'a str)>,
     current_process_id: u32,
@@ -238,21 +254,30 @@ pub fn stop_launcher_processes() {
 pub fn stop_launcher_processes() {}
 
 #[cfg(windows)]
-pub fn stop_codex_processes() {
+pub fn stop_codex_processes() -> bool {
     for process_id in find_codex_processes() {
         let _ = crate::windows_integration::terminate_process(process_id);
     }
+    wait_for_process_shutdown_with(find_codex_processes, std::thread::sleep)
 }
 
 #[cfg(not(windows))]
-pub fn stop_codex_processes() {
+pub fn stop_codex_processes() -> bool {
     for process_id in find_codex_processes() {
         let _ = std::process::Command::new("kill")
             .arg(format!("{process_id}"))
             .output();
     }
-    // 等进程完全退出
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    let stopped = wait_for_process_shutdown_with(find_codex_processes, std::thread::sleep);
+    if !stopped {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "codex.stop_timeout",
+            serde_json::json!({
+                "remaining_process_ids": find_codex_processes()
+            }),
+        );
+    }
+    stopped
 }
 
 #[cfg(windows)]

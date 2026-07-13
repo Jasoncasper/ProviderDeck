@@ -7,12 +7,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use regex::Regex;
 use serde_json::{Value, json};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 pub const BRIDGE_BINDING_NAME: &str = "providerDeckBridgeV1";
+const RENDERER_BRIDGE_EVENT: &str = "codex-message-from-view";
+const RENDERER_BRIDGE_HOOK: &str = "__providerDeckInterceptPostMessage";
+const RENDERER_BRIDGE_PATCH_LOADED: &str = "__providerDeckTransportPatchLoaded";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -23,6 +28,149 @@ pub type BridgeHandler = Arc<
 >;
 
 static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(100);
+
+pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<String>> {
+    if source.contains(RENDERER_BRIDGE_HOOK) || !source.contains(RENDERER_BRIDGE_EVENT) {
+        return Ok(None);
+    }
+    let bridge = Regex::new(
+        r"postMessage:([A-Za-z_$][A-Za-z0-9_$]*)=>\{let ([A-Za-z_$][A-Za-z0-9_$]*)=!1,([A-Za-z_$][A-Za-z0-9_$]*)=window\.electronBridge;",
+    )?;
+    let matches = bridge.find_iter(source).count();
+    if matches == 0 {
+        return Ok(None);
+    }
+    if matches > 1 {
+        bail!("multiple Codex renderer bridges matched; refusing ambiguous patch");
+    }
+    let replacement = format!(
+        "postMessage:${{1}}=>{{if(window.{RENDERER_BRIDGE_HOOK}?.(${{1}})===true)return;let ${{2}}=!1,${{3}}=window.electronBridge;"
+    );
+    let patched = bridge.replace(source, replacement);
+    Ok(Some(format!(
+        "window.{RENDERER_BRIDGE_PATCH_LOADED}=true;window.__providerDeckPendingPostMessages=window.__providerDeckPendingPostMessages||[];window.{RENDERER_BRIDGE_HOOK}=window.{RENDERER_BRIDGE_HOOK}||function(detail){{window.__providerDeckPendingPostMessages.push(detail);return true}};{patched}"
+    )))
+}
+
+pub fn renderer_bridge_fetch_enable_params() -> Value {
+    json!({
+        "patterns": [{
+            "urlPattern": "*app-initial~app-main~*.js*",
+            "resourceType": "Script",
+            "requestStage": "Response"
+        }]
+    })
+}
+
+pub fn renderer_prearm_auto_attach_params() -> Value {
+    json!({
+        "autoAttach": true,
+        "waitForDebuggerOnStart": true,
+        "flatten": true,
+        "filter": [
+            { "type": "page", "exclude": false },
+            { "exclude": true }
+        ]
+    })
+}
+
+pub async fn prearm_renderer_bridge_interceptor(websocket_url: &str) -> anyhow::Result<()> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    session
+        .send_command(
+            1,
+            "Target.setAutoAttach",
+            renderer_prearm_auto_attach_params(),
+        )
+        .await?;
+
+    let page_session_id = loop {
+        if let Some(attached) = session.target_attached_calls.pop_front() {
+            if let Some(session_id) = attached_page_session_id(&attached) {
+                break session_id;
+            }
+            resume_attached_target(&mut session, &attached).await?;
+            continue;
+        }
+        let Some(_) = session.next_message().await? else {
+            bail!("CDP browser websocket closed before a page target was attached");
+        };
+    };
+
+    session.session_id = Some(page_session_id.clone());
+    session
+        .send_command(
+            next_message_id(),
+            "Fetch.enable",
+            renderer_bridge_fetch_enable_params(),
+        )
+        .await?;
+    session
+        .send_command(
+            next_message_id(),
+            "Runtime.runIfWaitingForDebugger",
+            json!({}),
+        )
+        .await?;
+
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "renderer_transport.prearmed",
+        json!({ "session_id": page_session_id }),
+    );
+    tokio::spawn(async move {
+        loop {
+            if session.drain_target_attached_queue().await.is_err() {
+                break;
+            }
+            if session.drain_fetch_queue().await.is_err() {
+                break;
+            }
+            match session.next_message().await {
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+    });
+    Ok(())
+}
+
+fn attached_page_session_id(message: &Value) -> Option<String> {
+    let params = message.get("params")?;
+    (params.pointer("/targetInfo/type").and_then(Value::as_str) == Some("page"))
+        .then(|| {
+            params
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .flatten()
+}
+
+async fn resume_attached_target<S>(
+    session: &mut CdpSession<S>,
+    message: &Value,
+) -> anyhow::Result<()>
+where
+    S: SinkExt<Message>
+        + StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin
+        + Send,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    let Some(session_id) = message.pointer("/params/sessionId").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    session
+        .send_command_for_session(
+            next_message_id(),
+            "Runtime.runIfWaitingForDebugger",
+            json!({}),
+            Some(session_id),
+        )
+        .await?;
+    Ok(())
+}
 
 pub fn build_bridge_script(binding_name: &str) -> String {
     format!(
@@ -184,6 +332,12 @@ pub fn runtime_evaluate_params_with_await_promise(script: &str, await_promise: b
     })
 }
 
+pub fn runtime_evaluate_bool(response: &Value) -> Option<bool> {
+    response
+        .pointer("/result/result/value")
+        .and_then(Value::as_bool)
+}
+
 pub fn resolve_bridge_expression(request_id: &str, result: &Value) -> anyhow::Result<String> {
     Ok(format!(
         "window.__providerDeckResolve({}, {})",
@@ -222,7 +376,10 @@ struct CdpSession<S> {
     socket: S,
     responses: HashMap<u64, Value>,
     binding_calls: VecDeque<Value>,
+    fetch_calls: VecDeque<Value>,
+    target_attached_calls: VecDeque<Value>,
     handler: Option<BridgeHandler>,
+    session_id: Option<String>,
 }
 
 impl<S> CdpSession<S>
@@ -238,7 +395,10 @@ where
             socket,
             responses: HashMap::new(),
             binding_calls: VecDeque::new(),
+            fetch_calls: VecDeque::new(),
+            target_attached_calls: VecDeque::new(),
             handler: None,
+            session_id: None,
         }
     }
 
@@ -253,16 +413,28 @@ where
         method: &str,
         params: Value,
     ) -> anyhow::Result<Value> {
+        let session_id = self.session_id.clone();
+        self.send_command_for_session(message_id, method, params, session_id.as_deref())
+            .await
+    }
+
+    async fn send_command_for_session(
+        &mut self,
+        message_id: u64,
+        method: &str,
+        params: Value,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<Value> {
+        let mut command = json!({
+            "id": message_id,
+            "method": method,
+            "params": params,
+        });
+        if let Some(session_id) = session_id {
+            command["sessionId"] = Value::String(session_id.to_string());
+        }
         self.socket
-            .send(Message::Text(
-                json!({
-                    "id": message_id,
-                    "method": method,
-                    "params": params,
-                })
-                .to_string()
-                .into(),
-            ))
+            .send(Message::Text(command.to_string().into()))
             .await
             .with_context(|| format!("failed to send CDP command {method} id {message_id}"))?;
 
@@ -332,6 +504,12 @@ where
         if value.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled") {
             self.binding_calls.push_back(value.clone());
         }
+        if value.get("method").and_then(Value::as_str) == Some("Fetch.requestPaused") {
+            self.fetch_calls.push_back(value.clone());
+        }
+        if value.get("method").and_then(Value::as_str) == Some("Target.attachedToTarget") {
+            self.target_attached_calls.push_back(value.clone());
+        }
 
         Ok(Some(value))
     }
@@ -340,6 +518,117 @@ where
         while let Some(message) = self.binding_calls.pop_front() {
             self.route_binding_call(message).await?;
         }
+        Ok(())
+    }
+
+    async fn drain_fetch_queue(&mut self) -> anyhow::Result<()> {
+        while let Some(message) = self.fetch_calls.pop_front() {
+            self.route_fetch_call(message).await?;
+        }
+        Ok(())
+    }
+
+    async fn drain_target_attached_queue(&mut self) -> anyhow::Result<()> {
+        while let Some(message) = self.target_attached_calls.pop_front() {
+            let Some(session_id) = attached_page_session_id(&message) else {
+                resume_attached_target(self, &message).await?;
+                continue;
+            };
+            self.send_command_for_session(
+                next_message_id(),
+                "Fetch.enable",
+                renderer_bridge_fetch_enable_params(),
+                Some(&session_id),
+            )
+            .await?;
+            self.send_command_for_session(
+                next_message_id(),
+                "Runtime.runIfWaitingForDebugger",
+                json!({}),
+                Some(&session_id),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn route_fetch_call(&mut self, message: Value) -> anyhow::Result<()> {
+        let event_session_id = message
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| self.session_id.clone());
+        let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+        let request_id = params
+            .get("requestId")
+            .and_then(Value::as_str)
+            .context("Fetch.requestPaused missing requestId")?;
+        let response_code = params
+            .get("responseStatusCode")
+            .and_then(Value::as_u64)
+            .unwrap_or(200);
+        let response_headers = params
+            .get("responseHeaders")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let body = self
+            .send_command_for_session(
+                next_message_id(),
+                "Fetch.getResponseBody",
+                json!({ "requestId": request_id }),
+                event_session_id.as_deref(),
+            )
+            .await?;
+        let body_text = body
+            .pointer("/result/body")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let bytes = if body
+            .pointer("/result/base64Encoded")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            base64::engine::general_purpose::STANDARD
+                .decode(body_text)
+                .context("failed to decode intercepted renderer bundle")?
+        } else {
+            body_text.as_bytes().to_vec()
+        };
+        let source =
+            String::from_utf8(bytes).context("intercepted renderer bundle is not UTF-8")?;
+        let patch = patch_renderer_bridge_source(&source)?;
+        if patch.is_some() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "renderer_transport.patch_applied",
+                json!({ "request_id": request_id }),
+            );
+        }
+        let patched = patch.unwrap_or(source);
+        let headers = response_headers
+            .into_iter()
+            .filter(|header| {
+                !header
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| {
+                        name.eq_ignore_ascii_case("content-length")
+                            || name.eq_ignore_ascii_case("content-encoding")
+                    })
+            })
+            .collect::<Vec<_>>();
+        self.send_command_for_session(
+            next_message_id(),
+            "Fetch.fulfillRequest",
+            json!({
+                "requestId": request_id,
+                "responseCode": response_code,
+                "responseHeaders": headers,
+                "body": base64::engine::general_purpose::STANDARD.encode(patched.as_bytes())
+            }),
+            event_session_id.as_deref(),
+        )
+        .await?;
         Ok(())
     }
 

@@ -1,7 +1,8 @@
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use providerdeck_core::assets;
 use providerdeck_core::bridge::{self, BRIDGE_BINDING_NAME};
-use providerdeck_core::cdp::{CdpTarget, pick_page_target};
+use providerdeck_core::cdp::{CdpTarget, CdpVersion, pick_page_target};
 use serde_json::json;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -60,6 +61,158 @@ fn injection_script_uses_narrow_app_server_coordination() {
 }
 
 #[test]
+fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
+    let source = r#"sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
+
+    let patched = bridge::patch_renderer_bridge_source(source)
+        .expect("current Codex renderer bridge should be recognized")
+        .expect("renderer bridge should require a patch");
+
+    let hook = patched
+        .find("__providerDeckInterceptPostMessage")
+        .expect("ProviderDeck hook should be inserted");
+    let ipc = patched
+        .find("sendMessageFromView")
+        .expect("native Electron IPC send should remain available");
+    assert!(hook < ipc, "ProviderDeck hook must run before native IPC");
+    assert!(patched.contains("__providerDeckPendingPostMessages"));
+    assert!(patched.contains("return true"));
+}
+
+#[test]
+fn renderer_bridge_patch_ignores_unrelated_javascript() {
+    let source = "window.electronBridge.sendMessageFromView(message);";
+
+    let patched = bridge::patch_renderer_bridge_source(source)
+        .expect("unrelated JavaScript should not be an error");
+
+    assert!(patched.is_none());
+}
+
+#[test]
+fn renderer_bridge_fetch_intercepts_script_responses_before_execution() {
+    let params = bridge::renderer_bridge_fetch_enable_params();
+    let pattern = &params["patterns"][0];
+
+    assert_eq!(pattern["resourceType"], "Script");
+    assert_eq!(pattern["requestStage"], "Response");
+    assert!(
+        pattern["urlPattern"]
+            .as_str()
+            .expect("URL pattern should be a string")
+            .contains("app-initial~app-main~")
+    );
+}
+
+#[test]
+fn renderer_prearm_auto_attach_waits_for_page_before_first_execution() {
+    let params = bridge::renderer_prearm_auto_attach_params();
+
+    assert_eq!(params["autoAttach"], true);
+    assert_eq!(params["waitForDebuggerOnStart"], true);
+    assert_eq!(params["flatten"], true);
+    assert_eq!(params["filter"][0]["type"], "page");
+    assert_eq!(params["filter"][0]["exclude"], false);
+    assert_eq!(params["filter"][1]["exclude"], true);
+}
+
+#[tokio::test]
+async fn prearm_renderer_bridge_interceptor_enables_fetch_before_resuming_without_reload() {
+    let source = r#"sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}}"#;
+    let (url, request_rx) = spawn_cdp_server(move |mut socket| async move {
+        let auto_attach = recv_json(&mut socket).await;
+        assert_eq!(auto_attach["method"], "Target.setAutoAttach");
+        assert_eq!(auto_attach["params"]["waitForDebuggerOnStart"], true);
+        send_json(
+            &mut socket,
+            json!({ "id": auto_attach["id"], "result": {} }),
+        )
+        .await;
+        send_json(
+            &mut socket,
+            json!({
+                "method": "Target.attachedToTarget",
+                "params": {
+                    "sessionId": "page-session",
+                    "targetInfo": { "targetId": "page-1", "type": "page", "title": "ChatGPT", "url": "app://-/index.html" },
+                    "waitingForDebugger": true
+                }
+            }),
+        )
+        .await;
+
+        let fetch_enable = recv_json(&mut socket).await;
+        assert_eq!(fetch_enable["method"], "Fetch.enable");
+        assert_eq!(fetch_enable["sessionId"], "page-session");
+        send_json(
+            &mut socket,
+            json!({ "id": fetch_enable["id"], "sessionId": "page-session", "result": {} }),
+        )
+        .await;
+
+        let resume = recv_json(&mut socket).await;
+        assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
+        assert_eq!(resume["sessionId"], "page-session");
+        send_json(
+            &mut socket,
+            json!({ "id": resume["id"], "sessionId": "page-session", "result": {} }),
+        )
+        .await;
+
+        send_json(
+            &mut socket,
+            json!({
+                "method": "Fetch.requestPaused",
+                "sessionId": "page-session",
+                "params": {
+                    "requestId": "script-1",
+                    "responseStatusCode": 200,
+                    "responseHeaders": [{ "name": "content-type", "value": "text/javascript" }]
+                }
+            }),
+        )
+        .await;
+        let get_body = recv_json(&mut socket).await;
+        assert_eq!(get_body["method"], "Fetch.getResponseBody");
+        assert_eq!(get_body["sessionId"], "page-session");
+        send_json(
+            &mut socket,
+            json!({
+                "id": get_body["id"],
+                "sessionId": "page-session",
+                "result": { "body": source, "base64Encoded": false }
+            }),
+        )
+        .await;
+        let fulfill = recv_json(&mut socket).await;
+        assert_eq!(fulfill["method"], "Fetch.fulfillRequest");
+        assert_eq!(fulfill["sessionId"], "page-session");
+        let patched = base64::engine::general_purpose::STANDARD
+            .decode(fulfill["params"]["body"].as_str().unwrap())
+            .unwrap();
+        assert!(
+            String::from_utf8(patched)
+                .unwrap()
+                .contains("__providerDeckInterceptPostMessage")
+        );
+        send_json(
+            &mut socket,
+            json!({ "id": fulfill["id"], "sessionId": "page-session", "result": {} }),
+        )
+        .await;
+        close_socket(&mut socket).await;
+    })
+    .await;
+
+    bridge::prearm_renderer_bridge_interceptor(&url)
+        .await
+        .expect("prearm should enable interception and resume the paused page");
+    request_rx
+        .await
+        .expect("server task should finish without panicking");
+}
+
+#[test]
 fn cdp_target_deserializes_websocket_field() {
     let target: CdpTarget = serde_json::from_value(json!({
         "id": "page-1",
@@ -74,6 +227,20 @@ fn cdp_target_deserializes_websocket_field() {
     assert_eq!(
         target.web_socket_debugger_url.as_deref(),
         Some("ws://debug")
+    );
+}
+
+#[test]
+fn cdp_browser_version_deserializes_browser_websocket_field() {
+    let version: CdpVersion = serde_json::from_value(json!({
+        "Browser": "Chrome/150.0",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9229/devtools/browser/browser-1"
+    }))
+    .expect("browser version should deserialize");
+
+    assert_eq!(
+        version.web_socket_debugger_url,
+        "ws://127.0.0.1:9229/devtools/browser/browser-1"
     );
 }
 
@@ -93,6 +260,21 @@ fn runtime_evaluate_params_can_await_promise_for_bridge_health_checks() {
     assert_eq!(params["expression"], "Promise.resolve(true)");
     assert_eq!(params["awaitPromise"], true);
     assert_eq!(params["allowUnsafeEvalBlockedByCSP"], true);
+}
+
+#[test]
+fn runtime_evaluate_bool_reads_the_nested_remote_object_value() {
+    let response = json!({
+        "id": 7,
+        "result": {
+            "result": {
+                "type": "boolean",
+                "value": true
+            }
+        }
+    });
+
+    assert_eq!(bridge::runtime_evaluate_bool(&response), Some(true));
 }
 
 #[test]

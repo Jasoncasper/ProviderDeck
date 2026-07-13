@@ -64,6 +64,23 @@
     };
   }
 
+  function providerForRuntimeId(runtimeProviderId) {
+    var providerIds = Object.keys(catalog.providers || {});
+    for (var index = 0; index < providerIds.length; index += 1) {
+      var providerId = providerIds[index];
+      var provider = catalog.providers[providerId];
+      if (provider && provider.runtimeProviderId === runtimeProviderId) {
+        return { providerId: providerId, provider: provider };
+      }
+    }
+    return null;
+  }
+
+  function selectionFromParams(params) {
+    var settings = params && params.collaborationMode && params.collaborationMode.settings;
+    return settings && settings.model || params && params.model;
+  }
+
   function providerConfig(target) {
     if (!target || target.source === "official") return null;
     var key = "model_providers." + target.runtimeProviderId;
@@ -78,11 +95,26 @@
     return config;
   }
 
+  function persistedProviderConfig(target) {
+    return {
+      name: target.provider.name,
+      base_url: target.provider.baseUrl,
+      wire_api: "responses",
+      requires_openai_auth: false,
+      env_key: "PROVIDERDECK_RUNTIME_TOKEN",
+    };
+  }
+
   function applyTarget(params, target) {
     var next = Object.assign({}, params || {}, {
       model: target.model,
       modelProvider: target.runtimeProviderId,
     });
+    if (next.collaborationMode && next.collaborationMode.settings) {
+      next.collaborationMode = Object.assign({}, next.collaborationMode, {
+        settings: Object.assign({}, next.collaborationMode.settings, { model: target.model }),
+      });
+    }
     var config = providerConfig(target);
     if (config) next.config = Object.assign({}, next.config || {}, config);
     return next;
@@ -119,6 +151,7 @@
   }
 
   function patchModelListResult(result) {
+    if (window.__providerDeckTransportPatchLoaded !== true) return false;
     if (!result || typeof result !== "object") return false;
     if (patchModelArray(result.data)) return true;
     if (patchModelArray(result.models)) return true;
@@ -139,14 +172,34 @@
     return new Promise(function (resolve, reject) {
       var id = "providerdeck-" + (++internalSequence);
       internalRequests.set(id, { resolve: resolve, reject: reject });
-      originalDispatch(new CustomEvent("codex-message-from-view", {
-        detail: {
-          type: "mcp-request",
-          hostId: hostId,
-          request: { id: id, method: method, params: params || {} },
-        },
-      }));
+      forwardDetail({
+        type: "mcp-request",
+        hostId: hostId,
+        request: { id: id, method: method, params: params || {} },
+      });
     });
+  }
+
+  function forwardDetail(detail) {
+    var electronBridge = window.electronBridge;
+    if (electronBridge && typeof electronBridge.sendMessageFromView === "function") {
+      Promise.resolve(electronBridge.sendMessageFromView(detail)).catch(function (error) {
+        var request = detail && detail.request;
+        if (request) emitRequestError(request, error);
+      });
+      return true;
+    }
+    return originalDispatch(new CustomEvent("codex-message-from-view", { detail: detail }));
+  }
+
+  function forwardEvent(event) {
+    if (event && event.__providerDeckDirectIpc) return forwardDetail(event.detail);
+    return originalDispatch(event);
+  }
+
+  function passThrough(event) {
+    if (event && event.__providerDeckDirectIpc) return false;
+    return originalDispatch(event);
   }
 
   function journal(record) {
@@ -222,9 +275,10 @@
           provider: null,
         };
         if (rollbackTarget.source === "proxy") {
-          var providerId = original.providerId.replace(/^providerdeck-/, "");
-          rollbackTarget.providerId = providerId;
-          rollbackTarget.provider = catalog.providers && catalog.providers[providerId];
+          var originalProvider = providerForRuntimeId(original.providerId);
+          if (!originalProvider) throw new Error("original provider unavailable");
+          rollbackTarget.providerId = originalProvider.providerId;
+          rollbackTarget.provider = originalProvider.provider;
         }
         var rolledBack = await sendInternal("thread/resume", resumeParams(threadId, rollbackTarget));
         if (!verifyResume(rolledBack, threadId, rollbackTarget)) throw new Error("provider rollback verification failed");
@@ -249,8 +303,8 @@
   async function releaseTurn(event, request, target) {
     try {
       await performSwitch(request.params.threadId, target);
-      request.params = Object.assign({}, request.params, { model: target.model });
-      originalDispatch(event);
+      request.params = applyTarget(request.params, target);
+      forwardEvent(event);
     } catch (error) {
       emitRequestError(request, error);
     }
@@ -258,8 +312,8 @@
 
   async function handleTurnStart(event, request) {
     await loadCatalog();
-    var target = targetForSelection(request.params && request.params.model);
-    if (!target) return originalDispatch(event);
+    var target = targetForSelection(selectionFromParams(request.params));
+    if (!target) return forwardEvent(event);
     var threadId = request.params.threadId;
     if (threadStatuses.get(threadId) === "active") {
       var superseded = queuedTurns.get(threadId);
@@ -275,9 +329,67 @@
 
   async function handleThreadStart(event, request) {
     await loadCatalog();
-    var target = targetForSelection(request.params && request.params.model);
+    var target = targetForSelection(selectionFromParams(request.params));
     if (target) request.params = applyTarget(request.params, target);
-    return originalDispatch(event);
+    return forwardEvent(event);
+  }
+
+  async function handleConfigValueWrite(event, request) {
+    await loadCatalog();
+    var params = request.params || {};
+    if (params.keyPath !== "model") return forwardEvent(event);
+    var target = targetForSelection(params.value);
+    if (!target) return forwardEvent(event);
+    var mergeStrategy = params.mergeStrategy || "replace";
+    var edits = [];
+    if (target.source === "official") {
+      edits.push(
+        { keyPath: "model", value: target.model, mergeStrategy: mergeStrategy },
+        { keyPath: "model_provider", value: target.runtimeProviderId, mergeStrategy: "replace" }
+      );
+    } else {
+      edits.push({
+        keyPath: "model_providers." + target.runtimeProviderId,
+        value: persistedProviderConfig(target),
+        mergeStrategy: "replace",
+      });
+    }
+    request.method = "config/batchWrite";
+    request.params = {
+      edits: edits,
+      filePath: params.filePath,
+      expectedVersion: params.expectedVersion,
+      reloadUserConfig: true,
+    };
+    return forwardEvent(event);
+  }
+
+  async function handleConfigBatchWrite(event, request) {
+    await loadCatalog();
+    var params = request.params || {};
+    var edits = Array.isArray(params.edits) ? params.edits.slice() : [];
+    var modelEdit = edits.find(function (edit) { return edit && edit.keyPath === "model"; });
+    if (!modelEdit) return forwardEvent(event);
+    var target = targetForSelection(modelEdit.value);
+    if (!target) return forwardEvent(event);
+    if (target.source === "proxy") {
+      edits = edits.filter(function (edit) {
+        return edit.keyPath !== "model"
+          && edit.keyPath !== "model_provider"
+          && edit.keyPath !== "model_providers." + target.runtimeProviderId;
+      });
+      edits.push({
+        keyPath: "model_providers." + target.runtimeProviderId,
+        value: persistedProviderConfig(target),
+        mergeStrategy: "replace",
+      });
+    } else {
+      modelEdit.value = target.model;
+      edits = edits.filter(function (edit) { return edit.keyPath !== "model_provider"; });
+      edits.push({ keyPath: "model_provider", value: target.runtimeProviderId, mergeStrategy: "replace" });
+    }
+    request.params = Object.assign({}, params, { edits: edits, reloadUserConfig: true });
+    return forwardEvent(event);
   }
 
   async function flushPending(threadId) {
@@ -343,17 +455,28 @@
     }
   }
 
-  window.addEventListener("message", onMessage, true);
-  window.dispatchEvent = function providerDeckDispatch(event) {
+  function interceptRequest(event) {
     var detail = event && event.detail;
     var request = detail && detail.type === "mcp-request" && detail.request;
-    if (!event || event.type !== "codex-message-from-view" || !request) return originalDispatch(event);
+    if (!request) return passThrough(event);
     hostId = detail.hostId || hostId;
     requestMetadata.set(String(request.id), { method: request.method, params: request.params || {} });
     if (request.method === "model/list") {
       request.params = Object.assign({}, request.params || {}, { includeHidden: true });
       modelListRequestIds.add(String(request.id));
-      return originalDispatch(event);
+      return passThrough(event);
+    }
+    if (request.method === "thread/list") {
+      request.params = Object.assign({}, request.params || {}, { modelProviders: [] });
+      return passThrough(event);
+    }
+    if (request.method === "config/value/write") {
+      void handleConfigValueWrite(event, request);
+      return true;
+    }
+    if (request.method === "config/batchWrite") {
+      void handleConfigBatchWrite(event, request);
+      return true;
     }
     if (request.method === "thread/start") {
       void handleThreadStart(event, request);
@@ -363,7 +486,28 @@
       void handleTurnStart(event, request);
       return true;
     }
-    return originalDispatch(event);
+    return passThrough(event);
+  }
+
+  window.__providerDeckInterceptPostMessage = function providerDeckInterceptPostMessage(detail) {
+    if (!detail || detail.type !== "mcp-request" || !detail.request) return false;
+    var event = new CustomEvent("codex-message-from-view", { detail: detail });
+    event.__providerDeckDirectIpc = true;
+    return interceptRequest(event);
+  };
+
+  var pendingPostMessages = Array.isArray(window.__providerDeckPendingPostMessages)
+    ? window.__providerDeckPendingPostMessages.splice(0)
+    : [];
+  pendingPostMessages.forEach(function (detail) {
+    if (window.__providerDeckInterceptPostMessage(detail) !== true) forwardDetail(detail);
+  });
+
+  window.addEventListener("message", onMessage, true);
+  window.dispatchEvent = function providerDeckDispatch(event) {
+    if (!event || event.type !== "codex-message-from-view") return originalDispatch(event);
+    if (event.__codexForwardedViaBridge) return originalDispatch(event);
+    return interceptRequest(event);
   };
 
   void loadCatalog();

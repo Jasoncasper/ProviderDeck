@@ -397,10 +397,13 @@ fn ports_non_windows_also_falls_back_when_requested_is_busy() {
 
 #[test]
 fn proxy_uses_existing_environment_before_system_proxy() {
-    let env = HashMap::from([(
-        "HTTPS_PROXY".to_string(),
-        "http://env-proxy.example.test:8080".to_string(),
-    )]);
+    let env = HashMap::from([
+        (
+            "HTTPS_PROXY".to_string(),
+            "http://env-proxy.example.test:8080".to_string(),
+        ),
+        ("NO_PROXY".to_string(), "internal.example.test".to_string()),
+    ]);
     assert!(has_proxy_environment(&env));
     let process_env = codex_process_environment_from(&env, || {
         panic!("system proxy detection should not run when env already has proxy")
@@ -408,6 +411,10 @@ fn proxy_uses_existing_environment_before_system_proxy() {
     assert_eq!(
         process_env.get("HTTPS_PROXY").map(String::as_str),
         Some("http://env-proxy.example.test:8080")
+    );
+    assert_eq!(
+        process_env.get("NO_PROXY").map(String::as_str),
+        Some("internal.example.test,localhost,127.0.0.1,::1")
     );
 }
 
@@ -429,6 +436,10 @@ fn proxy_injects_system_proxy_when_environment_is_empty() {
     assert_eq!(
         process_env.get("ALL_PROXY").map(String::as_str),
         Some("http://system-proxy.example.test:8080")
+    );
+    assert_eq!(
+        process_env.get("NO_PROXY").map(String::as_str),
+        Some("localhost,127.0.0.1,::1")
     );
 }
 
@@ -521,6 +532,13 @@ async fn helper_rejects_unauthenticated_provider_requests_and_has_no_global_resp
         .unwrap();
     assert_eq!(scoped.status(), reqwest::StatusCode::UNAUTHORIZED);
 
+    let models = client
+        .get(format!("http://127.0.0.1:{port}/provider/team/v1/models"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(models.status(), reqwest::StatusCode::UNAUTHORIZED);
+
     let global = client
         .post(format!("http://127.0.0.1:{port}/v1/responses"))
         .json(&serde_json::json!({"model":"gpt-5.4"}))
@@ -566,7 +584,10 @@ async fn launch_lifecycle_writes_success_and_shutdowns_on_exit() {
             "select-helper:57421",
             "load-settings",
             "start-helper:57421",
+            "repair-config:57421",
+            "prearm-start:9229",
             "launch:9229",
+            "prearm-finish",
             "inject:9229:57421",
             "status:running",
             "wait-codex",
@@ -712,8 +733,12 @@ async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails(
             "select-helper:57421",
             "load-settings",
             "start-helper:57421",
+            "repair-config:57421",
+            "prearm-start:9229",
             "launch:9229",
+            "prearm-finish",
             "inject:9229:57421",
+            "prearm-stop",
             "shutdown-helper:57421",
             "terminate-codex",
             "status:failed",
@@ -753,7 +778,10 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             "select-helper:57421",
             "load-settings",
             "start-helper:57421",
+            "repair-config:57421",
+            "prearm-start:9229",
             "launch:9229",
+            "prearm-stop",
             "shutdown-helper:57421",
             "status:failed",
         ]
@@ -799,8 +827,12 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             "select-helper:57421",
             "load-settings",
             "start-helper:57421",
+            "repair-config:57421",
+            "prearm-start:9229",
             "launch:9229",
+            "prearm-finish",
             "inject:9229:57421",
+            "prearm-stop",
             "shutdown-helper:57421",
             "terminate-packaged:4242",
             "status:failed",
@@ -958,6 +990,29 @@ impl LaunchHooks for FakeHooks {
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
         self.event(format!("start-helper:{helper_port}"));
         Ok(())
+    }
+
+    async fn repair_codex_config(&self, helper_port: u16) -> anyhow::Result<()> {
+        self.event(format!("repair-config:{helper_port}"));
+        Ok(())
+    }
+
+    async fn start_transport_prearm(
+        &self,
+        debug_port: u16,
+        _helper_port: u16,
+    ) -> anyhow::Result<()> {
+        self.event(format!("prearm-start:{debug_port}"));
+        Ok(())
+    }
+
+    async fn finish_transport_prearm(&self) -> anyhow::Result<()> {
+        self.event("prearm-finish");
+        Ok(())
+    }
+
+    async fn stop_transport_prearm(&self) {
+        self.event("prearm-stop");
     }
 
     async fn launch_codex(
