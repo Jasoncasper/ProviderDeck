@@ -332,7 +332,7 @@
     var threadId = request.params.threadId;
     if (!threadBindings.has(threadId)) {
       var pendingStart = matchingPendingThreadStart(target);
-      if (pendingStart) {
+      if (pendingStart || pendingThreadStarts.size === 1) {
         // Codex can queue the first turn behind thread/start, but its response is
         // not always delivered to the renderer message channel.
         request.params = applyTarget(request.params, target);

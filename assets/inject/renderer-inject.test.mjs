@@ -287,7 +287,7 @@ async function establishBinding(harness, model, modelProvider) {
     return { turn: { id: "turn-racing", status: "inProgress" } };
   });
   requestEvent(harness, 36, "thread/start", {
-    model: "providerdeck:team_proxy:vendor:model:v2",
+    model: "gpt-5.4",
   });
   await tick();
   requestEvent(harness, 37, "turn/start", {
@@ -299,7 +299,7 @@ async function establishBinding(harness, model, modelProvider) {
   assert.deepEqual(
     harness.nativeRequests.map((request) => request.method),
     ["thread/start", "turn/start"],
-    "the first turn must not wait for a thread/start response that may not be visible to the renderer",
+    "the first turn must not read a thread that is still being created",
   );
   const turn = harness.nativeRequests.at(-1);
   assert.equal(turn.params.model, "vendor:model:v2");
