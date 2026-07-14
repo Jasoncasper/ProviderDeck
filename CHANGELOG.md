@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.1 (2026-07-14)
+
+### 修复
+
+- 代理 Chat Completion 到 Responses 的兼容层为 assistant message 生成合法的 `msg_*` ID，避免历史会话继续时被上游拒绝。
+
 ## v1.0.0 (2026-07-14)
 
 ### 新功能

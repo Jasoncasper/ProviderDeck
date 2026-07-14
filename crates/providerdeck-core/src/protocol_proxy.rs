@@ -977,6 +977,13 @@ pub fn response_id_from_chat_id(id: Option<&str>) -> String {
     }
 }
 
+fn message_id_from_response_id(response_id: &str) -> String {
+    format!(
+        "msg_{}",
+        response_id.strip_prefix("resp_").unwrap_or(response_id)
+    )
+}
+
 fn push_sse(output: &mut String, event: &str, data: Value) {
     output.push_str("event: ");
     output.push_str(event);
@@ -1283,7 +1290,7 @@ impl ChatSseState {
     fn push_text_delta_into(&mut self, delta: &str, output: &mut String) {
         if !self.text.added {
             let output_index = self.next_output_index();
-            let item_id = format!("{}_msg", self.response_id);
+            let item_id = message_id_from_response_id(&self.response_id);
             self.text.output_index = Some(output_index);
             self.text.item_id = item_id.clone();
             self.text.added = true;
@@ -2943,7 +2950,7 @@ fn chat_message_to_response_output_item(message: &Value, response_id: &str) -> O
     }
 
     Some(json!({
-        "id": format!("{response_id}_msg"),
+        "id": message_id_from_response_id(response_id),
         "type": "message",
         "status": "completed",
         "role": "assistant",

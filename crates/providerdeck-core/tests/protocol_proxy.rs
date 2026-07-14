@@ -576,6 +576,7 @@ fn chat_completion_response_converts_to_responses_response() {
     assert_eq!(converted["usage"]["input_tokens"], 10);
     assert_eq!(converted["usage"]["output_tokens"], 5);
     assert_eq!(converted["output"][0]["type"], "message");
+    assert_eq!(converted["output"][0]["id"], "msg_chatcmpl_123");
     assert_eq!(converted["output"][0]["content"][0]["text"], "hi there");
 }
 
@@ -879,6 +880,7 @@ data: [DONE]
     assert!(converted.contains("event: response.output_text.delta"));
     assert!(converted.contains("\"delta\":\"hel\""));
     assert!(converted.contains("\"text\":\"hello\""));
+    assert!(converted.contains("\"id\":\"msg_chatcmpl_1\""));
     assert!(converted.contains("\"input_tokens\":3"));
     assert!(converted.contains("event: response.completed"));
     assert!(converted.contains("data: [DONE]"));
