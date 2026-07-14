@@ -963,28 +963,6 @@ pub async fn recover_thread_runtime() -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn import_codexmate_config() -> CommandResult<Value> {
-    let source = directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".codex-session-delete"))
-        .unwrap_or_else(|| PathBuf::from(".codex-session-delete"));
-    let destination = providerdeck_core::paths::default_app_state_dir();
-    match providerdeck_core::legacy_import::import_codexmate_config(&source, &destination) {
-        Ok(result) => ok(
-            "CodexMate provider 配置导入完成。",
-            json!({ "imported": result.imported, "skipped": result.skipped }),
-        ),
-        Err(error) => failed(
-            &format!("导入失败，ProviderDeck 默认配置保持不变：{error}"),
-            json!({
-                "errorCode": "legacy_import_failed",
-                "rolledBack": true,
-                "recoveryRequired": false
-            }),
-        ),
-    }
-}
-
-#[tauri::command]
 pub fn safe_exit_providerdeck(app: tauri::AppHandle) -> CommandResult<Value> {
     providerdeck_core::watcher::stop_launcher_processes();
     providerdeck_core::watcher::stop_codex_processes();

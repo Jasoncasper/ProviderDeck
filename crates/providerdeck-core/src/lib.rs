@@ -8,7 +8,6 @@ pub mod http_client;
 pub mod image_compressor;
 pub mod install;
 pub mod launcher;
-pub mod legacy_import;
 pub mod local_auth;
 pub mod paths;
 pub mod ports;

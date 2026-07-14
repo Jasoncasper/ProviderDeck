@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { Download, Network, Image } from "lucide-react";
+import { Network, Image } from "lucide-react";
 import { NoticeToast } from "@/components/shared/NoticeToast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -69,15 +69,6 @@ export default function RoutingPage() {
     setExpandedIndex(config.providers.length);
   };
 
-  const importCodexMate = async () => {
-    try {
-      const result = await invoke<CommandResult<{ imported: string[]; skipped: string[] }>>("import_codexmate_config");
-      setNotice({ type: result.status === "ok" ? "ok" : "error", text: result.message });
-      if (result.status === "ok") await loadConfig();
-    } catch (error) {
-      setNotice({ type: "error", text: String(error) });
-    }
-  };
 
   const saveConfig = async (updatedConfig?: SmartRouterConfig) => {
     const cfg = updatedConfig ?? config;
@@ -257,9 +248,6 @@ export default function RoutingPage() {
         <h2 className="text-xl font-bold flex items-center gap-2">
           <Network className="h-5 w-5" /> Provider 配置
         </h2>
-        <Button variant="outline" onClick={() => void importCodexMate()}>
-          <Download className="mr-2 h-4 w-4" />导入 CodexMate 配置
-        </Button>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>

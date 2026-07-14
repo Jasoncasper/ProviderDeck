@@ -26,7 +26,6 @@
 - 通过 app-server bridge 在同一任务内重绑定 model/provider。
 - 支持 pending switch、验证、rollback 和 recovery journal。
 - 提供独立 provider 配置、runtime 状态和诊断管理器。
-- 提供只读 CodexMate provider 配置导入。
 
 ### 安全与性能
 

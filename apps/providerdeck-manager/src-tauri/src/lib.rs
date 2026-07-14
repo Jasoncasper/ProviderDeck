@@ -129,7 +129,6 @@ pub fn run() {
             commands::load_runtime_status,
             commands::load_switch_journal,
             commands::recover_thread_runtime,
-            commands::import_codexmate_config,
             commands::safe_exit_providerdeck
         ])
         .run(tauri::generate_context!());
