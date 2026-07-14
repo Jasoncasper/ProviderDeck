@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.8 (2026-07-14)
+
+### 修复
+
+- 官方 `gpt-5.3-codex-spark` 的 `turn/start` 强制关闭 reasoning summary，避免 Codex 将不受该模型支持的 `reasoning.summary` 发送到 `/responses` 后返回 400。
+- 新任务首轮与已有任务继续发送共用同一兼容规则；其他官方模型和代理模型的 summary 设置保持不变。
+
 ## v1.0.7 (2026-07-14)
 
 ### 修复

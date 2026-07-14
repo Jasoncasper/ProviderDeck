@@ -24,6 +24,8 @@ compaction 失败或超时会阻止用户 turn 发出，并恢复切换前的 pr
 
 官方模型固定使用 `modelProvider: "openai"`。代理模型的 selection 形如 `providerdeck:<provider-id>:<model>`，真实模型名可以继续包含冒号。
 
+官方 `gpt-5.3-codex-spark` 当前不接受 `reasoning.summary`，因此其 `turn/start.summary` 会被覆盖为 `none`，由 Codex 在构造 `/responses` 请求时省略该参数；其他模型保留原 summary 设置。
+
 Codex 临时配置使用不含 `.` 的内部 runtime provider ID。普通 provider ID 保持 `providerdeck-<provider-id>`；包含 `.` 或占用编码保留前缀的 ID 会采用稳定十六进制编码，避免被 Codex 的 dotted keyPath 误解析为嵌套配置。
 
 虚拟 selection 仅用于界面选择，不会写入 Codex 全局 `model` 或 `model_provider`。代理 provider 只通过 `thread/start`、`thread/resume` 和 `turn/start` 的临时配置生效；启动时会清理旧版本遗留的 `providerdeck:*` / `providerdeck-*` 全局选择，让 Codex 回落到官方默认配置，避免历史列表被 provider 过滤或官方模型误走代理。

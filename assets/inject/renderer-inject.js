@@ -150,6 +150,14 @@
     return next;
   }
 
+  function applyTurnTarget(params, target) {
+    var next = applyTarget(params, target);
+    if (target.source === "official" && target.model === "gpt-5.3-codex-spark") {
+      next.summary = "none";
+    }
+    return next;
+  }
+
   function modelDescriptor(model) {
     return {
       model: model.selection,
@@ -422,7 +430,7 @@
   async function releaseTurn(event, request, target) {
     try {
       await performSwitch(request.params.threadId, target);
-      request.params = applyTarget(request.params, target);
+      request.params = applyTurnTarget(request.params, target);
       forwardEvent(event);
     } catch (error) {
       emitRequestError(request, error);
@@ -439,7 +447,7 @@
       if (pendingStart || pendingThreadStarts.size === 1) {
         // Codex can queue the first turn behind thread/start, but its response is
         // not always delivered to the renderer message channel.
-        request.params = applyTarget(request.params, target);
+        request.params = applyTurnTarget(request.params, target);
         return forwardEvent(event);
       }
     }

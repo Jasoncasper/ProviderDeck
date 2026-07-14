@@ -358,6 +358,52 @@ async function establishBinding(harness, model, modelProvider) {
 
 {
   const harness = await createHarness();
+  await establishBinding(harness, "gpt-5.3-codex-spark", "openai");
+  requestEvent(harness, 39, "turn/start", {
+    threadId: "thread-1",
+    model: "gpt-5.3-codex-spark",
+    summary: "detailed",
+    input: [{ type: "text", text: "continue with spark" }],
+  });
+  await drain();
+  const turn = harness.nativeRequests.find((request) => request.id === 39);
+  assert.equal(turn.params.summary, "none", "Spark turns must disable unsupported reasoning summaries");
+}
+
+{
+  const harness = await createHarness(async (method) => {
+    if (method === "thread/start") return new Promise(() => {});
+    return { turn: { id: "turn-spark-first", status: "inProgress" } };
+  });
+  requestEvent(harness, 40, "thread/start", { model: "gpt-5.3-codex-spark" });
+  await tick();
+  requestEvent(harness, 41, "turn/start", {
+    threadId: "thread-spark-new",
+    model: "gpt-5.3-codex-spark",
+    summary: "detailed",
+    input: [{ type: "text", text: "first spark turn" }],
+  });
+  await drain();
+  const turn = harness.nativeRequests.find((request) => request.id === 41);
+  assert.equal(turn.params.summary, "none", "the first Spark turn must disable unsupported reasoning summaries");
+}
+
+{
+  const harness = await createHarness();
+  await establishBinding(harness, "gpt-5.4", "openai");
+  requestEvent(harness, 42, "turn/start", {
+    threadId: "thread-1",
+    model: "gpt-5.4",
+    summary: "detailed",
+    input: [{ type: "text", text: "continue with gpt-5.4" }],
+  });
+  await drain();
+  const turn = harness.nativeRequests.find((request) => request.id === 42);
+  assert.equal(turn.params.summary, "detailed", "supported official models must retain the requested summary mode");
+}
+
+{
+  const harness = await createHarness();
   requestEvent(harness, 32, "config/value/write", {
     keyPath: "model",
     value: "providerdeck:team_proxy:vendor:model:v2",
