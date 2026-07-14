@@ -58,3 +58,28 @@ fn manager_launch_button_spawns_silent_launcher_binary() {
     assert!(commands_rs.contains("std::process::Command::new"));
     assert!(!commands_rs.contains("launch_and_inject_with_hooks(options"));
 }
+
+#[test]
+fn macos_runtime_watcher_follows_explicit_launch_and_exit_actions() {
+    let commands_rs =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands.rs"))
+            .expect("read manager commands.rs");
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+    let spawn_launcher = commands_rs
+        .split_once("fn spawn_silent_launcher")
+        .expect("silent launcher function")
+        .1;
+    let safe_exit = commands_rs
+        .split_once("pub fn safe_exit_providerdeck")
+        .expect("safe exit command")
+        .1;
+    let tray_quit = lib_rs
+        .split_once("\"quit\" =>")
+        .expect("tray quit handler")
+        .1;
+
+    assert!(spawn_launcher.contains("install_watcher(&launcher, request.debug_port)"));
+    assert!(safe_exit.contains("uninstall_watcher()"));
+    assert!(tray_quit.contains("uninstall_watcher()"));
+}

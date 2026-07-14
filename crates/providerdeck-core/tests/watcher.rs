@@ -1,7 +1,8 @@
 use providerdeck_core::watcher::{
-    build_spawn_launcher_command, build_watcher_install_plan, cdp_listening, codex_process_ids,
-    disable_watcher_at, enable_watcher_at, filter_killable_launcher_processes,
-    macos_app_process_ids, wait_for_process_shutdown_with, watcher_disabled_flag,
+    build_macos_watcher_command, build_macos_watcher_install_plan, build_spawn_launcher_command,
+    build_watcher_install_plan, cdp_listening, codex_process_ids, disable_watcher_at,
+    enable_watcher_at, filter_killable_launcher_processes, macos_app_process_ids, should_take_over,
+    wait_for_process_shutdown_with, watcher_disabled_flag,
 };
 
 #[test]
@@ -20,6 +21,14 @@ fn cdp_listening_returns_false_for_closed_port() {
     };
 
     assert!(!cdp_listening(port));
+}
+
+#[test]
+fn watcher_takes_over_only_unmanaged_chatgpt() {
+    assert!(should_take_over(true, false, false));
+    assert!(!should_take_over(false, false, false));
+    assert!(!should_take_over(true, true, false));
+    assert!(!should_take_over(true, false, true));
 }
 
 #[test]
@@ -46,6 +55,33 @@ fn watcher_install_plan_registers_rust_launcher_at_logon() {
     assert_eq!(plan.shortcut_name, "ProviderDeckWatcher.lnk");
     assert_eq!(plan.shortcut_target, "C:/Tools/providerdeck.exe");
     assert_eq!(plan.shortcut_arguments, "--debug-port 9333");
+}
+
+#[test]
+fn macos_watcher_plan_runs_the_silent_launcher_in_watch_mode() {
+    let launcher = "/Applications/Provider & Deck.app/Contents/MacOS/providerdeck";
+    let command = build_macos_watcher_command(launcher, 9229);
+    assert_eq!(command, vec![launcher, "--watch", "--debug-port", "9229"]);
+
+    let plan = build_macos_watcher_install_plan(
+        launcher.into(),
+        "/Users/test/Library/LaunchAgents".into(),
+        9229,
+    );
+    assert_eq!(plan.label, "com.jasoncasper.providerdeck.watcher");
+    assert_eq!(
+        plan.plist_path,
+        std::path::PathBuf::from(
+            "/Users/test/Library/LaunchAgents/com.jasoncasper.providerdeck.watcher.plist"
+        )
+    );
+    assert!(plan.plist.contains("<string>--watch</string>"));
+    assert!(plan.plist.contains("<string>9229</string>"));
+    assert!(plan.plist.contains("Provider &amp; Deck.app"));
+    assert!(
+        plan.plist
+            .contains("<key>SuccessfulExit</key>\n      <false/>")
+    );
 }
 
 #[test]

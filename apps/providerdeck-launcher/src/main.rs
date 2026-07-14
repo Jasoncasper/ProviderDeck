@@ -28,10 +28,14 @@ impl Default for LauncherHooks {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let options = parse_launch_options(args.iter());
+    if is_watcher_mode(&args) {
+        return run_watcher(options).await;
+    }
     let Some(_guard) = acquire_single_instance_guard()? else {
         return Ok(());
     };
-    let options = parse_launch_options(std::env::args().skip(1));
     tokio::spawn(async {
         let _ = notify_manager_when_update_available().await;
     });
@@ -39,6 +43,95 @@ async fn main() -> Result<()> {
     let handle = launch_and_inject_with_hooks(options, &hooks).await?;
     handle.wait_for_codex_exit().await?;
     Ok(())
+}
+
+fn is_watcher_mode<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == "--watch")
+}
+
+#[cfg(target_os = "macos")]
+async fn run_watcher(options: LaunchOptions) -> Result<()> {
+    let launcher_path = std::env::current_exe().context("failed to resolve watcher executable")?;
+    let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+        "watcher.start",
+        json!({
+            "debug_port": options.debug_port,
+            "helper_port": options.helper_port
+        }),
+    );
+    loop {
+        if providerdeck_core::watcher::default_watcher_disabled_flag().exists() {
+            return Ok(());
+        }
+        let chatgpt_processes = providerdeck_core::watcher::find_codex_processes();
+        let cdp_ready = providerdeck_core::watcher::cdp_listening(options.debug_port);
+        let launcher_running = providerdeck_core::watcher::cdp_listening(
+            providerdeck_core::ports::LAUNCHER_GUARD_PORT,
+        );
+        if providerdeck_core::watcher::should_take_over(
+            !chatgpt_processes.is_empty(),
+            cdp_ready,
+            launcher_running,
+        ) {
+            let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                "watcher.takeover_requested",
+                json!({ "chatgpt_process_count": chatgpt_processes.len() }),
+            );
+            if providerdeck_core::watcher::stop_codex_processes() {
+                match spawn_managed_launcher(&launcher_path, &options) {
+                    Ok(()) => {
+                        let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                            "watcher.takeover_started",
+                            json!({ "debug_port": options.debug_port }),
+                        );
+                    }
+                    Err(error) => {
+                        let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                            "watcher.takeover_failed",
+                            json!({ "error": error.to_string() }),
+                        );
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs_f64(
+                providerdeck_core::watcher::TAKEOVER_FAILURE_BACKOFF_SECONDS,
+            ))
+            .await;
+            continue;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs_f64(
+            providerdeck_core::watcher::WATCHER_INTERVAL_SECONDS,
+        ))
+        .await;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn run_watcher(_options: LaunchOptions) -> Result<()> {
+    anyhow::bail!("watch mode is only supported on macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_managed_launcher(launcher_path: &Path, options: &LaunchOptions) -> anyhow::Result<()> {
+    let mut command = std::process::Command::new(launcher_path);
+    if let Some(app_dir) = options.app_dir.as_deref() {
+        command.arg("--app-path").arg(app_dir);
+    }
+    command
+        .arg("--debug-port")
+        .arg(options.debug_port.to_string())
+        .arg("--helper-port")
+        .arg(options.helper_port.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .with_context(|| format!("failed to spawn {}", launcher_path.display()))
 }
 
 fn acquire_single_instance_guard() -> anyhow::Result<Option<std::net::TcpListener>> {
@@ -356,6 +449,28 @@ mod tests {
 
         assert_eq!(options.debug_port, LaunchOptions::default().debug_port);
         assert_eq!(options.helper_port, LaunchOptions::default().helper_port);
+    }
+
+    #[test]
+    fn watcher_mode_is_selected_explicitly() {
+        assert!(is_watcher_mode(["--watch", "--debug-port", "9229"]));
+        assert!(!is_watcher_mode(["--debug-port", "9229"]));
+    }
+
+    #[test]
+    fn macos_watcher_checks_runtime_before_relaunching() {
+        let production = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let watcher_branch = production.find("if is_watcher_mode(&args)").unwrap();
+        let launcher_guard = production.find("acquire_single_instance_guard()?").unwrap();
+
+        assert!(watcher_branch < launcher_guard);
+        assert!(production.contains("should_take_over("));
+        assert!(production.contains("LAUNCHER_GUARD_PORT"));
+        assert!(production.contains("stop_codex_processes()"));
+        assert!(production.contains("TAKEOVER_FAILURE_BACKOFF_SECONDS"));
     }
 
     #[test]

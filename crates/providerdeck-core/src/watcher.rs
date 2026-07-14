@@ -9,6 +9,7 @@ pub const TAKEOVER_FAILURE_BACKOFF_SECONDS: f64 = 30.0;
 pub const WATCHER_RUN_NAME: &str = "ProviderDeckWatcher";
 pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "ProviderDeckWatcher.lnk";
+pub const MACOS_WATCHER_LABEL: &str = "com.jasoncasper.providerdeck.watcher";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatcherInstallPlan {
@@ -17,6 +18,13 @@ pub struct WatcherInstallPlan {
     pub shortcut_name: String,
     pub shortcut_target: String,
     pub shortcut_arguments: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacOsWatcherInstallPlan {
+    pub label: String,
+    pub plist_path: PathBuf,
+    pub plist: String,
 }
 
 pub fn watcher_disabled_flag(root: &Path) -> PathBuf {
@@ -56,6 +64,10 @@ pub fn cdp_listening(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
 }
 
+pub fn should_take_over(chatgpt_running: bool, cdp_ready: bool, launcher_running: bool) -> bool {
+    chatgpt_running && !cdp_ready && !launcher_running
+}
+
 pub fn build_spawn_launcher_command(launcher_path: &str, debug_port: u16) -> Vec<String> {
     vec![
         launcher_path.to_string(),
@@ -74,6 +86,67 @@ pub fn build_watcher_install_plan(launcher_path: PathBuf, debug_port: u16) -> Wa
         shortcut_target: launcher,
         shortcut_arguments: arguments,
     }
+}
+
+pub fn build_macos_watcher_command(launcher_path: &str, debug_port: u16) -> Vec<String> {
+    vec![
+        launcher_path.to_string(),
+        "--watch".to_string(),
+        "--debug-port".to_string(),
+        debug_port.to_string(),
+    ]
+}
+
+pub fn build_macos_watcher_install_plan(
+    launcher_path: PathBuf,
+    launch_agents_dir: PathBuf,
+    debug_port: u16,
+) -> MacOsWatcherInstallPlan {
+    let label = MACOS_WATCHER_LABEL.to_string();
+    let plist_path = launch_agents_dir.join(format!("{label}.plist"));
+    let arguments = build_macos_watcher_command(&launcher_path.to_string_lossy(), debug_port)
+        .into_iter()
+        .map(|argument| format!("    <string>{}</string>", escape_xml(&argument)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+{arguments}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+      <key>SuccessfulExit</key>
+      <false/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
+"#
+    );
+    MacOsWatcherInstallPlan {
+        label,
+        plist_path,
+        plist,
+    }
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 pub fn codex_process_ids<'a>(processes: impl IntoIterator<Item = (u32, &'a str)>) -> Vec<u32> {
@@ -160,9 +233,62 @@ pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<()> {
+    let launch_agents_dir = directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join("Library/LaunchAgents"))
+        .ok_or_else(|| anyhow::anyhow!("unable to resolve macOS LaunchAgents directory"))?;
+    let plan = build_macos_watcher_install_plan(
+        launcher_path.to_path_buf(),
+        launch_agents_dir,
+        debug_port,
+    );
+    let domain = current_user_launchd_domain()?;
+    if let Some(parent) = plan.plist_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary_path = plan.plist_path.with_extension("plist.tmp");
+    std::fs::write(&temporary_path, &plan.plist)?;
+    std::fs::rename(&temporary_path, &plan.plist_path)?;
+    if let Err(error) = enable_watcher() {
+        let _ =
+            rollback_macos_watcher_files(&plan.plist_path, &crate::paths::default_app_state_dir());
+        return Err(error.into());
+    }
+
+    let service = format!("{domain}/{}", plan.label);
+    let _ = std::process::Command::new("launchctl")
+        .args(["bootout", &service])
+        .output();
+    let output = match std::process::Command::new("launchctl")
+        .arg("bootstrap")
+        .arg(&domain)
+        .arg(&plan.plist_path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = rollback_macos_watcher_files(
+                &plan.plist_path,
+                &crate::paths::default_app_state_dir(),
+            );
+            return Err(error.into());
+        }
+    };
+    if !output.status.success() {
+        let _ =
+            rollback_macos_watcher_files(&plan.plist_path, &crate::paths::default_app_state_dir());
+        anyhow::bail!(
+            "failed to install macOS watcher: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn install_watcher(_launcher_path: &Path, _debug_port: u16) -> anyhow::Result<()> {
-    anyhow::bail!("watcher install is only supported on Windows")
+    anyhow::bail!("watcher install is only supported on Windows and macOS")
 }
 
 #[cfg(windows)]
@@ -176,9 +302,48 @@ pub fn uninstall_watcher() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn uninstall_watcher() -> anyhow::Result<()> {
+    let launch_agents_dir = directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join("Library/LaunchAgents"))
+        .ok_or_else(|| anyhow::anyhow!("unable to resolve macOS LaunchAgents directory"))?;
+    let plist_path = launch_agents_dir.join(format!("{MACOS_WATCHER_LABEL}.plist"));
+    if let Ok(domain) = current_user_launchd_domain() {
+        let service = format!("{domain}/{MACOS_WATCHER_LABEL}");
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &service])
+            .output();
+    }
+    rollback_macos_watcher_files(&plist_path, &crate::paths::default_app_state_dir())?;
+    Ok(())
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn uninstall_watcher() -> anyhow::Result<()> {
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn current_user_launchd_domain() -> anyhow::Result<String> {
+    let output = std::process::Command::new("id").arg("-u").output()?;
+    if !output.status.success() {
+        anyhow::bail!("unable to resolve current macOS user id");
+    }
+    let user_id = String::from_utf8(output.stdout)?.trim().to_string();
+    if user_id.is_empty() || !user_id.bytes().all(|byte| byte.is_ascii_digit()) {
+        anyhow::bail!("invalid current macOS user id");
+    }
+    Ok(format!("gui/{user_id}"))
+}
+
+fn rollback_macos_watcher_files(plist_path: &Path, state_root: &Path) -> std::io::Result<()> {
+    let disable_result = disable_watcher_at(state_root);
+    let remove_result = match std::fs::remove_file(plist_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    };
+    disable_result.and(remove_result)
 }
 
 #[cfg(windows)]
@@ -323,4 +488,21 @@ fn startup_shortcut_path() -> Option<PathBuf> {
             .join("Startup")
             .join(WATCHER_STARTUP_SHORTCUT_NAME)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rollback_macos_watcher_files, watcher_disabled_flag};
+
+    #[test]
+    fn macos_watcher_rollback_disables_runtime_and_removes_plist() {
+        let root = tempfile::tempdir().unwrap();
+        let plist_path = root.path().join("watcher.plist");
+        std::fs::write(&plist_path, "plist").unwrap();
+
+        rollback_macos_watcher_files(&plist_path, root.path()).unwrap();
+
+        assert!(watcher_disabled_flag(root.path()).exists());
+        assert!(!plist_path.exists());
+    }
 }

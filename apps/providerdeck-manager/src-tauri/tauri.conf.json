@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ProviderDeck",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "identifier": "com.jasoncasper.providerdeck",
   "build": {
     "beforeDevCommand": "npm run vite:dev",

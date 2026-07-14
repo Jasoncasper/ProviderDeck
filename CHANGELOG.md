@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.10 (2026-07-14)
+
+### 修复
+
+- macOS 从 ProviderDeck 启动或重启 ChatGPT 时安装当前用户级 LaunchAgent watcher；ProviderDeck runtime 意外退出后，若用户直接打开缺少 CDP 和 launcher guard 的 ChatGPT，watcher 会一次性接管并通过 ProviderDeck 重新拉起，防止 `gpt-5.3-codex-spark` 再次携带不支持的 `reasoning.summary`。
+- 安全退出和托盘退出会禁用并卸载 watcher；安装或启动中途失败会回滚 plist 和禁用状态，避免残留后台自启动项。
+
 ## v1.0.9 (2026-07-14)
 
 ### 修复

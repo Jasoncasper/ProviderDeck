@@ -265,6 +265,9 @@ fn spawn_providerdeck_launch(
 
 fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
     let launcher = providerdeck_core::install::companion_binary_path(SILENT_BINARY);
+    #[cfg(target_os = "macos")]
+    providerdeck_core::watcher::install_watcher(&launcher, request.debug_port)?;
+
     let mut command = std::process::Command::new(&launcher);
     if !request.app_path.trim().is_empty() {
         command.arg("--app-path").arg(request.app_path.trim());
@@ -279,10 +282,15 @@ fn spawn_silent_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    command
+    let result = command
         .spawn()
         .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", launcher.to_string_lossy()))
+        .map_err(|error| anyhow::anyhow!("无法启动 {}：{error}", launcher.to_string_lossy()));
+    #[cfg(target_os = "macos")]
+    if result.is_err() {
+        let _ = providerdeck_core::watcher::uninstall_watcher();
+    }
+    result
 }
 
 #[tauri::command]
@@ -964,6 +972,7 @@ pub async fn recover_thread_runtime() -> CommandResult<Value> {
 
 #[tauri::command]
 pub fn safe_exit_providerdeck(app: tauri::AppHandle) -> CommandResult<Value> {
+    let _ = providerdeck_core::watcher::uninstall_watcher();
     providerdeck_core::watcher::stop_launcher_processes();
     providerdeck_core::watcher::stop_codex_processes();
     let result = ok("ProviderDeck 已安全退出。", json!({}));

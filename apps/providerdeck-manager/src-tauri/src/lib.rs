@@ -52,6 +52,7 @@ pub fn run() {
                         }
                     }
                     "quit" => {
+                        let _ = providerdeck_core::watcher::uninstall_watcher();
                         providerdeck_core::watcher::stop_launcher_processes();
                         providerdeck_core::watcher::stop_codex_processes();
                         app.exit(0);
