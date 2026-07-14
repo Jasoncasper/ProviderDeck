@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.0.7 (2026-07-14)
+
+### 修复
+
+- 切回官方模型前检测代理响应中缺少 `encrypted_content` 的 reasoning item，并先在原代理 provider 上执行标准 `thread/compact/start`；等待 compaction 完成后才放行官方 turn，避免官方 `/responses` 重放 `rs_resp_*` 临时 ID 时返回 404。
+- 历史任务即使已经错误地绑定到官方模型，也会根据最后一个不安全 reasoning 所属 model 唯一恢复原代理、压缩历史并重新切回官方模型。
+- compaction 启动失败、执行失败或超时时不再发送用户 turn，并恢复切换前的 provider 绑定。
+
+### 安全
+
+- 历史安全检查仅在本机读取 rollout，bridge 只返回 `requiresCompaction` 与 model，不返回、记录、改写或备份会话正文；必要的 compaction 只发往该任务已经使用过的原代理 provider。
+
 ## v1.0.6 (2026-07-14)
 
 ### 修复

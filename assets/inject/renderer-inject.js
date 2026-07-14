@@ -16,6 +16,7 @@
   var threadStatuses = new Map();
   var queuedTurns = new Map();
   var pendingBindings = new Map();
+  var compactionWaiters = new Map();
   var hostId = "local";
 
   function loadCatalog() {
@@ -73,6 +74,36 @@
       }
     }
     return null;
+  }
+
+  function targetFromBinding(binding) {
+    if (!binding) return null;
+    if (binding.providerId === "openai") {
+      return {
+        model: binding.model,
+        providerId: "openai",
+        runtimeProviderId: "openai",
+        source: "official",
+      };
+    }
+    var match = providerForRuntimeId(binding.providerId);
+    if (!match) return null;
+    return {
+      model: binding.model,
+      providerId: match.providerId,
+      runtimeProviderId: binding.providerId,
+      source: "proxy",
+      provider: match.provider,
+    };
+  }
+
+  function proxyTargetForModel(model) {
+    if (typeof model !== "string" || !model) return null;
+    var matches = (catalog.models || []).filter(function (candidate) {
+      return candidate && candidate.model === model && candidate.source === "proxy";
+    });
+    if (matches.length !== 1) return null;
+    return targetForSelection(matches[0].selection);
   }
 
   function selectionFromParams(params) {
@@ -228,6 +259,82 @@
     return applyTarget({ threadId: threadId }, target);
   }
 
+  function sameBinding(binding, target) {
+    return !!binding
+      && binding.model === target.model
+      && binding.providerId === target.runtimeProviderId;
+  }
+
+  function clearCompactionWaiter(threadId) {
+    var waiter = compactionWaiters.get(threadId);
+    if (!waiter) return null;
+    compactionWaiters.delete(threadId);
+    clearTimeout(waiter.timeout);
+    return waiter;
+  }
+
+  function waitForCompaction(threadId) {
+    if (compactionWaiters.has(threadId)) {
+      throw new Error("thread history compaction is already running");
+    }
+    return new Promise(function (resolve, reject) {
+      var timeout = setTimeout(function () {
+        compactionWaiters.delete(threadId);
+        reject(new Error("thread history compaction timed out"));
+      }, 180000);
+      compactionWaiters.set(threadId, { resolve: resolve, reject: reject, timeout: timeout });
+    });
+  }
+
+  async function compactThreadHistory(threadId) {
+    var completion = waitForCompaction(threadId);
+    try {
+      await sendInternal("thread/compact/start", { threadId: threadId });
+    } catch (error) {
+      clearCompactionWaiter(threadId);
+      throw error;
+    }
+    await completion;
+  }
+
+  async function rebindThread(threadId, target) {
+    await sendInternal("thread/unsubscribe", { threadId: threadId });
+    var resumed = await sendInternal("thread/resume", resumeParams(threadId, target));
+    if (!verifyResume(resumed, threadId, target)) throw new Error("provider switch verification failed");
+    var binding = bindingFromTarget(target);
+    threadBindings.set(threadId, binding);
+    return binding;
+  }
+
+  async function prepareOfficialHistory(threadId, currentBinding) {
+    var safety = await bridge("/providerdeck/thread-history/safety", { threadId: threadId });
+    if (!safety || safety.status !== "ok") {
+      throw new Error(safety && safety.message || "thread history safety check failed");
+    }
+    if (!safety.requiresCompaction) return currentBinding;
+
+    var compactTarget = targetFromBinding(currentBinding);
+    if (!compactTarget || compactTarget.source !== "proxy") {
+      compactTarget = proxyTargetForModel(safety.model);
+    }
+    if (!compactTarget || compactTarget.source !== "proxy") {
+      throw new Error("unsafe proxy history cannot be matched to its original provider");
+    }
+
+    if (!sameBinding(currentBinding, compactTarget)) {
+      currentBinding = await rebindThread(threadId, compactTarget);
+    }
+    await journal({
+      phase: "compacting",
+      threadId: threadId,
+      original: currentBinding,
+      target: { model: "history-safe", providerId: "openai" },
+      error: null,
+    });
+    await compactThreadHistory(threadId);
+    return currentBinding;
+  }
+
   function isUnmaterializedThreadError(error) {
     var message = String(error && error.message || error);
     return message.indexOf("not materialized yet") >= 0
@@ -257,20 +364,21 @@
         threadBindings.set(threadId, original);
       }
     }
-    if (original && original.model === target.model && original.providerId === target.runtimeProviderId) return;
-
-    await journal({
-      phase: "switching",
-      threadId: threadId,
-      original: original || null,
-      target: bindingFromTarget(target),
-      error: null,
-    });
+    var rollbackBinding = original;
     try {
-      await sendInternal("thread/unsubscribe", { threadId: threadId });
-      var resumed = await sendInternal("thread/resume", resumeParams(threadId, target));
-      if (!verifyResume(resumed, threadId, target)) throw new Error("provider switch verification failed");
-      threadBindings.set(threadId, bindingFromTarget(target));
+      if (target.source === "official") {
+        original = await prepareOfficialHistory(threadId, original);
+      }
+      if (sameBinding(original, target)) return;
+
+      await journal({
+        phase: "switching",
+        threadId: threadId,
+        original: original || null,
+        target: bindingFromTarget(target),
+        error: null,
+      });
+      await rebindThread(threadId, target);
       await journal({ phase: "stable", threadId: threadId, original: original || null, target: bindingFromTarget(target), error: null });
       return;
     } catch (targetError) {
@@ -281,7 +389,7 @@
         target: bindingFromTarget(target),
         error: String(targetError && targetError.message || targetError),
       });
-      if (!original) {
+      if (!rollbackBinding) {
         await journal({ phase: "recovery_required", threadId: threadId, original: null, target: bindingFromTarget(target), error: "original binding unavailable" });
         throw targetError;
       }
@@ -289,25 +397,14 @@
         await sendInternal("thread/unsubscribe", { threadId: threadId });
       } catch (_) {}
       try {
-        var rollbackTarget = {
-          model: original.model,
-          runtimeProviderId: original.providerId,
-          providerId: original.providerId,
-          source: original.providerId === "openai" ? "official" : "proxy",
-          provider: null,
-        };
-        if (rollbackTarget.source === "proxy") {
-          var originalProvider = providerForRuntimeId(original.providerId);
-          if (!originalProvider) throw new Error("original provider unavailable");
-          rollbackTarget.providerId = originalProvider.providerId;
-          rollbackTarget.provider = originalProvider.provider;
-        }
+        var rollbackTarget = targetFromBinding(rollbackBinding);
+        if (!rollbackTarget) throw new Error("original provider unavailable");
         var rolledBack = await sendInternal("thread/resume", resumeParams(threadId, rollbackTarget));
         if (!verifyResume(rolledBack, threadId, rollbackTarget)) throw new Error("provider rollback verification failed");
-        threadBindings.set(threadId, original);
-        await journal({ phase: "failed", threadId: threadId, original: original, target: bindingFromTarget(target), rolledBack: true, error: String(targetError && targetError.message || targetError) });
+        threadBindings.set(threadId, rollbackBinding);
+        await journal({ phase: "failed", threadId: threadId, original: rollbackBinding, target: bindingFromTarget(target), rolledBack: true, error: String(targetError && targetError.message || targetError) });
       } catch (rollbackError) {
-        await journal({ phase: "recovery_required", threadId: threadId, original: original, target: bindingFromTarget(target), error: String(rollbackError && rollbackError.message || rollbackError) });
+        await journal({ phase: "recovery_required", threadId: threadId, original: rollbackBinding, target: bindingFromTarget(target), error: String(rollbackError && rollbackError.message || rollbackError) });
       }
       throw targetError;
     }
@@ -484,6 +581,13 @@
     var notification = notificationEnvelope(event && event.data);
     if (!notification) return;
     var params = notification.params || {};
+    if (notification.method === "item/completed" && params.threadId) {
+      var completedItem = params.item;
+      var compacting = compactionWaiters.get(params.threadId);
+      if (compacting && completedItem && completedItem.type === "contextCompaction") {
+        compacting.itemCompleted = true;
+      }
+    }
     if (notification.method === "thread/status/changed" && params.threadId) {
       var status = params.status && params.status.type || "unknown";
       threadStatuses.set(params.threadId, status);
@@ -492,6 +596,16 @@
       }
     }
     if (notification.method === "turn/completed" && params.threadId) {
+      var waiter = compactionWaiters.get(params.threadId);
+      if (waiter) {
+        var turnStatus = params.turn && params.turn.status;
+        waiter = clearCompactionWaiter(params.threadId);
+        if (waiter.itemCompleted && turnStatus === "completed") {
+          waiter.resolve();
+        } else {
+          waiter.reject(new Error("thread history compaction failed"));
+        }
+      }
       void flushPending(params.threadId);
     }
   }

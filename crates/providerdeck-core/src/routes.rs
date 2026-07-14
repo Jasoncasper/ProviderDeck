@@ -64,6 +64,7 @@ pub async fn handle_bridge_request(
         "/providerdeck/switch-journal/save" => save_switch_journal(payload.clone()),
         "/providerdeck/switch-journal/load" => load_switch_journal(),
         "/providerdeck/switch-journal/clear" => clear_switch_journal(),
+        "/providerdeck/thread-history/safety" => thread_history_safety_value(&payload),
         "/settings/get" => settings_value(ctx.settings.get_settings().await),
         "/settings/set" => settings_value(ctx.settings.set_settings(payload.clone()).await),
         "/devtools/open" => ctx.runtime.open_devtools().await,
@@ -129,6 +130,20 @@ fn load_switch_journal() -> anyhow::Result<Value> {
 fn clear_switch_journal() -> anyhow::Result<Value> {
     switch_journal().clear()?;
     Ok(json!({ "status": "ok" }))
+}
+
+fn thread_history_safety_value(payload: &Value) -> anyhow::Result<Value> {
+    let thread_id = payload
+        .get("threadId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("threadId is required"))?;
+    let (rollout_found, safety) = crate::thread_history::thread_history_safety(thread_id)?;
+    Ok(json!({
+        "status": "ok",
+        "rolloutFound": rollout_found,
+        "requiresCompaction": safety.requires_compaction,
+        "model": safety.model,
+    }))
 }
 
 #[derive(Default)]

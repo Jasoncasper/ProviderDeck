@@ -19,6 +19,7 @@ pub mod routes;
 pub mod settings;
 pub mod status;
 pub mod switch_journal;
+pub mod thread_history;
 pub mod update;
 pub mod version;
 pub mod watcher;

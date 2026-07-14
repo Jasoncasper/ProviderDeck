@@ -8,8 +8,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 "$CODEX_BIN" app-server generate-json-schema --out "$TMP_DIR" >/dev/null
 REQUEST_SCHEMA="$TMP_DIR/ClientRequest.json"
 RESUME_SCHEMA="$TMP_DIR/v2/ThreadResumeResponse.json"
+NOTIFICATION_SCHEMA="$TMP_DIR/ServerNotification.json"
 
-for required in 'thread/resume' 'modelProvider' 'config'; do
+for required in 'thread/resume' 'thread/compact/start' 'modelProvider' 'config'; do
   if ! grep -q "$required" "$REQUEST_SCHEMA"; then
     echo "missing required app-server request field: $required" >&2
     exit 1
@@ -23,4 +24,11 @@ for required in 'modelProvider' 'model' 'thread'; do
   fi
 done
 
-echo "app-server schema supports ProviderDeck thread/provider rebinding"
+for required in 'item/completed' 'contextCompaction' 'turn/completed'; do
+  if ! grep -q "$required" "$NOTIFICATION_SCHEMA"; then
+    echo "missing required app-server notification field: $required" >&2
+    exit 1
+  fi
+done
+
+echo "app-server schema supports ProviderDeck thread/provider rebinding and compaction"

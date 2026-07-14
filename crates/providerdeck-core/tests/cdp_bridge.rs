@@ -54,6 +54,7 @@ fn injection_script_uses_narrow_app_server_coordination() {
     assert!(script.contains("model/list"));
     assert!(script.contains("thread/unsubscribe"));
     assert!(script.contains("thread/resume"));
+    assert!(script.contains("thread/compact/start"));
     assert!(script.contains("turn/start"));
     assert!(!script.contains("Response.prototype.json"));
     assert!(!script.contains("XMLHttpRequest"));
@@ -77,6 +78,7 @@ fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
     assert!(hook < ipc, "ProviderDeck hook must run before native IPC");
     assert!(patched.contains("__providerDeckPendingPostMessages"));
     assert!(patched.contains("window.__providerDeckSendCliRequest"));
+    assert!(patched.contains("thread/compact/start"));
     assert!(patched.contains("gE(`send-cli-request-for-host`,payload)"));
     assert!(patched.contains("Unsupported ProviderDeck AppServer request`));var _E=1"));
     assert!(patched.contains("return true"));

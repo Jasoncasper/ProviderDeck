@@ -57,3 +57,21 @@ async fn journal_rejects_renderer_credentials() {
             .contains("credentials")
     );
 }
+
+#[tokio::test]
+async fn thread_history_safety_rejects_path_traversal() {
+    let response = handle_bridge_request(
+        context(),
+        "/providerdeck/thread-history/safety",
+        json!({"threadId":"../../routing.toml"}),
+    )
+    .await;
+
+    assert_eq!(response["status"], "failed");
+    assert!(
+        response["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid thread id")
+    );
+}

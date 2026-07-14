@@ -143,6 +143,13 @@ async function createHarness(rpcHandler = async (method, params) => {
   sandbox.__providerDeckBridge = async (path, payload) => {
     bridgeCalls.push({ path, payload: structuredClone(payload ?? {}) });
     if (path === "/providerdeck/catalog") return structuredClone(runtimeCatalog);
+    if (path === "/providerdeck/thread-history/safety") {
+      return structuredClone(options.historySafety ?? {
+        status: "ok",
+        requiresCompaction: false,
+        model: null,
+      });
+    }
     return { status: "ok" };
   };
   vm.runInNewContext(script, sandbox, { filename: "renderer-inject.js" });
@@ -596,6 +603,130 @@ async function establishBinding(harness, model, modelProvider) {
     ["gpt-5.4", "providerdeck:team_proxy:vendor:model:v2"],
     "queued initial model/list must receive third-party models",
   );
+}
+
+{
+  const harness = await createHarness(undefined, true, [], catalog, {
+    historySafety: {
+      status: "ok",
+      requiresCompaction: true,
+      model: "vendor:model:v2",
+    },
+  });
+  await establishBinding(harness, "vendor:model:v2", "providerdeck-team_proxy");
+  requestEvent(harness, 71, "turn/start", {
+    threadId: "thread-1",
+    model: "gpt-5.4",
+    input: [{ type: "text", text: "continue officially" }],
+  });
+  await drain();
+
+  assert.deepEqual(
+    harness.appCommandCalls.map((call) => call.method),
+    ["thread/compact/start"],
+    "proxy history must compact before rebinding to the official provider",
+  );
+  assert.equal(harness.nativeRequests.some((request) => request.id === 71), false);
+
+  harness.emitMessage({
+    type: "mcp-notification",
+    message: {
+      method: "item/completed",
+      params: { threadId: "thread-1", item: { id: "compact-1", type: "contextCompaction" } },
+    },
+  });
+  harness.emitMessage({
+    type: "mcp-notification",
+    message: {
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: { id: "compact-turn-1", status: "completed" } },
+    },
+  });
+  await drain();
+
+  assert.deepEqual(
+    harness.appCommandCalls.map((call) => call.method),
+    ["thread/compact/start", "thread/unsubscribe", "thread/resume"],
+  );
+  assert.equal(harness.nativeRequests.at(-1).id, 71);
+  assert.equal(harness.nativeRequests.at(-1).params.modelProvider, "openai");
+}
+
+{
+  const harness = await createHarness(undefined, true, [], catalog, {
+    historySafety: {
+      status: "ok",
+      requiresCompaction: true,
+      model: "vendor:model:v2",
+    },
+  });
+  await establishBinding(harness, "gpt-5.4", "openai");
+  requestEvent(harness, 72, "turn/start", {
+    threadId: "thread-1",
+    model: "gpt-5.4",
+    input: [{ type: "text", text: "retry broken history" }],
+  });
+  await drain();
+
+  assert.deepEqual(
+    harness.appCommandCalls.map((call) => call.method),
+    ["thread/unsubscribe", "thread/resume", "thread/compact/start"],
+    "an already-official thread must temporarily restore the proxy that produced unsafe history",
+  );
+  const proxyResume = harness.appCommandCalls[1];
+  assert.equal(proxyResume.params.model, "vendor:model:v2");
+  assert.equal(proxyResume.params.modelProvider, "providerdeck-team_proxy");
+
+  harness.emitMessage({
+    type: "mcp-notification",
+    message: {
+      method: "item/completed",
+      params: { threadId: "thread-1", item: { id: "compact-2", type: "contextCompaction" } },
+    },
+  });
+  harness.emitMessage({
+    type: "mcp-notification",
+    message: {
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: { id: "compact-turn-2", status: "completed" } },
+    },
+  });
+  await drain();
+
+  assert.equal(harness.nativeRequests.at(-1).id, 72);
+  assert.equal(harness.nativeRequests.at(-1).params.modelProvider, "openai");
+}
+
+{
+  const harness = await createHarness(async (method, params) => {
+    if (method === "thread/compact/start") throw new Error("compaction failed");
+    if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+    if (method === "thread/resume") {
+      return {
+        thread: { id: params.threadId, status: { type: "idle" } },
+        model: params.model,
+        modelProvider: params.modelProvider,
+      };
+    }
+    return { turn: { id: "turn-1", status: "inProgress" } };
+  }, true, [], catalog, {
+    historySafety: {
+      status: "ok",
+      requiresCompaction: true,
+      model: "vendor:model:v2",
+    },
+  });
+  await establishBinding(harness, "vendor:model:v2", "providerdeck-team_proxy");
+  requestEvent(harness, 73, "turn/start", {
+    threadId: "thread-1",
+    model: "gpt-5.4",
+    input: [{ type: "text", text: "do not forward" }],
+  });
+  await drain();
+
+  assert.equal(harness.nativeRequests.some((request) => request.id === 73), false);
+  const error = harness.emittedMessages.find((message) => message.message?.id === 73);
+  assert.match(error.message.error.message, /compaction failed/);
 }
 
 console.log("providerdeck renderer injection tests passed");

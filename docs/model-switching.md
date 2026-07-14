@@ -6,6 +6,20 @@
 thread/unsubscribe -> thread/resume(target) -> verify -> turn/start
 ```
 
+代理模型生成的 reasoning 没有 OpenAI 的 `encrypted_content`，不能作为持久化 item 切回官方 `/responses` 重放。目标为官方模型时，ProviderDeck 先在本机检查当前 rollout；发现不安全 reasoning 后执行：
+
+```text
+restore original proxy when needed
+  -> thread/compact/start
+  -> wait for contextCompaction + turn/completed
+  -> thread/unsubscribe
+  -> thread/resume(openai)
+  -> verify
+  -> turn/start
+```
+
+compaction 失败或超时会阻止用户 turn 发出，并恢复切换前的 provider。检查结果只包含是否需要 compaction 和最后一个不安全 model，不通过 bridge 返回历史正文；compaction 请求只发往该任务已经使用过的原代理 provider。
+
 验证要求 threadId、model 和 modelProvider 同时匹配。运行中的任务只记录最后一次 pending selection；当前 turn 使用原 provider，完成或 interrupt 进入 idle 后再切换。
 
 官方模型固定使用 `modelProvider: "openai"`。代理模型的 selection 形如 `providerdeck:<provider-id>:<model>`，真实模型名可以继续包含冒号。
