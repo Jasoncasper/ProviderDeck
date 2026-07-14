@@ -1,12 +1,13 @@
 {
   "name": "providerdeck-manager",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
     "check": "tsc --noEmit -p tsconfig.json",
+    "icons:generate": "bash ../../scripts/generate-icons.sh",
     "vite:dev": "vite --host 127.0.0.1 --port 1420",
     "vite:build": "vite build"
   },

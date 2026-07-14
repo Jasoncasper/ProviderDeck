@@ -39,6 +39,8 @@ const tabs: TopbarTab[] = [
   { id: "about", label: "关于", icon: Info },
 ];
 
+const RUNTIME_STATUS_REFRESH_MS = 1_000;
+
 function loadInitialTheme(): Theme {
   const stored = window.localStorage.getItem("providerdeck-theme");
   return stored === "dark" ? "dark" : "light";
@@ -182,6 +184,14 @@ export function App() {
   useEffect(() => {
     void awaitStartup();
   }, [awaitStartup]);
+
+  useEffect(() => {
+    if (activeTab !== "home") return;
+    const intervalId = window.setInterval(() => {
+      void loadRuntime();
+    }, RUNTIME_STATUS_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
+  }, [activeTab, loadRuntime]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");

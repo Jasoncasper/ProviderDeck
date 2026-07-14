@@ -32,6 +32,23 @@ fn manager_uses_single_instance_guard_before_starting_tauri() {
 }
 
 #[test]
+fn macos_manager_runs_as_menu_bar_accessory_and_close_hides_window() {
+    let lib_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        .expect("read manager lib.rs");
+    let close_handler = lib_rs
+        .split_once("window.on_window_event")
+        .expect("main window close handler")
+        .1;
+
+    assert!(lib_rs.contains("set_activation_policy(tauri::ActivationPolicy::Accessory)"));
+    assert!(lib_rs.contains("api.prevent_close()"));
+    assert!(lib_rs.contains("let _ = w.hide()"));
+    assert!(close_handler.contains("set_activation_policy(tauri::ActivationPolicy::Accessory)"));
+    assert!(lib_rs.contains("TrayIconBuilder::new()"));
+    assert!(lib_rs.contains("\"quit\" =>"));
+}
+
+#[test]
 fn manager_launch_button_spawns_silent_launcher_binary() {
     let commands_rs =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands.rs"))

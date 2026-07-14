@@ -20,7 +20,7 @@ export function UpdateCheck({ overview, update, onCheckUpdate, onPerformUpdate }
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <div className="border rounded-lg bg-muted/30 p-3">
-            <span className="text-xs text-muted-foreground">Codex 版本</span>
+            <span className="text-xs text-muted-foreground">ChatGPT 版本</span>
             <p className="font-semibold text-sm mt-1">{overview?.codex_version ?? "未检测到"}</p>
           </div>
           <div className="border rounded-lg bg-muted/30 p-3">

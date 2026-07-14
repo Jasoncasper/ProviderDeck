@@ -20,16 +20,28 @@ pub fn run() {
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            app.handle()
+                .set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+
             let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-            let icon = app.default_window_icon().cloned().unwrap_or_else(|| {
+            #[cfg(target_os = "macos")]
+            let tray_icon =
+                tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png"))?;
+            #[cfg(not(target_os = "macos"))]
+            let tray_icon = app.default_window_icon().cloned().unwrap_or_else(|| {
                 tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                     .expect("Failed to load embedded icon")
             });
-            let _tray = TrayIconBuilder::new()
-                .icon(icon)
+
+            let tray_builder = TrayIconBuilder::new().icon(tray_icon);
+            #[cfg(target_os = "macos")]
+            let tray_builder = tray_builder.icon_as_template(true);
+
+            let _tray = tray_builder
                 .tooltip("ProviderDeck — 点击显示/隐藏")
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
@@ -79,10 +91,15 @@ pub fn run() {
                     .build()?;
 
             let w = window.clone();
+            #[cfg(target_os = "macos")]
+            let close_app_handle = app.handle().clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = w.hide();
+                    #[cfg(target_os = "macos")]
+                    let _ =
+                        close_app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             });
 

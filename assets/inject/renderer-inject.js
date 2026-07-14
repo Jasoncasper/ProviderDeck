@@ -11,6 +11,7 @@
   var officialModels = new Set();
   var modelListRequestIds = new Set();
   var requestMetadata = new Map();
+  var pendingThreadStarts = new Map();
   var internalRequests = new Map();
   var threadBindings = new Map();
   var threadStatuses = new Map();
@@ -211,6 +212,16 @@
     return { model: target.model, providerId: target.runtimeProviderId };
   }
 
+  function matchingPendingThreadStart(target) {
+    var binding = bindingFromTarget(target);
+    var starts = Array.from(pendingThreadStarts.values());
+    return starts.find(function (start) {
+      return start.binding
+        && start.binding.model === binding.model
+        && start.binding.providerId === binding.providerId;
+    });
+  }
+
   function verifyResume(result, threadId, target) {
     return !!result
       && result.thread
@@ -226,8 +237,12 @@
   async function performSwitch(threadId, target) {
     var original = threadBindings.get(threadId);
     if (!original) {
-      var current = await sendInternal("thread/read", { threadId: threadId, includeTurns: false });
+      var current = await sendInternal("thread/read", { threadId: threadId, includeTurns: true });
       var currentThread = current && current.thread;
+      if (currentThread && Array.isArray(currentThread.turns) && currentThread.turns.length === 0) {
+        threadBindings.set(threadId, bindingFromTarget(target));
+        return;
+      }
       var currentModel = current && current.model || currentThread && currentThread.model;
       var currentProvider = current && current.modelProvider || currentThread && currentThread.modelProvider;
       if (currentModel && currentProvider) {
@@ -315,6 +330,10 @@
     var target = targetForSelection(selectionFromParams(request.params));
     if (!target) return forwardEvent(event);
     var threadId = request.params.threadId;
+    if (!threadBindings.has(threadId)) {
+      var pendingStart = matchingPendingThreadStart(target);
+      if (pendingStart) await pendingStart.promise;
+    }
     if (threadStatuses.get(threadId) === "active") {
       var superseded = queuedTurns.get(threadId);
       if (superseded) emitRequestError(superseded.request, new Error("model switch superseded by a newer selection"));
@@ -328,9 +347,17 @@
   }
 
   async function handleThreadStart(event, request) {
+    var resolveStart;
+    var startPromise = new Promise(function (resolve) { resolveStart = resolve; });
+    var pendingStart = { binding: null, promise: startPromise, resolve: resolveStart };
+    pendingThreadStarts.set(String(request.id), pendingStart);
     await loadCatalog();
     var target = targetForSelection(selectionFromParams(request.params));
-    if (target) request.params = applyTarget(request.params, target);
+    if (target) {
+      request.params = applyTarget(request.params, target);
+      pendingStart.binding = bindingFromTarget(target);
+    }
+    requestMetadata.set(String(request.id), { method: request.method, params: request.params || {} });
     return forwardEvent(event);
   }
 
@@ -411,8 +438,14 @@
   function trackResponse(request, result) {
     if (!request || !result) return;
     if ((request.method === "thread/start" || request.method === "thread/resume") && result.thread && result.thread.id) {
-      if (result.model && result.modelProvider) {
-        threadBindings.set(result.thread.id, { model: result.model, providerId: result.modelProvider });
+      var model = result.model;
+      var modelProvider = result.modelProvider;
+      if (request.method === "thread/start") {
+        model = model || request.params && request.params.model;
+        modelProvider = modelProvider || request.params && request.params.modelProvider;
+      }
+      if (model && modelProvider) {
+        threadBindings.set(result.thread.id, { model: model, providerId: modelProvider });
       }
       if (result.thread.status && result.thread.status.type) threadStatuses.set(result.thread.id, result.thread.status.type);
     }
@@ -430,6 +463,8 @@
         return;
       }
       var metadata = requestMetadata.get(id);
+      var pendingStart = pendingThreadStarts.get(id);
+      if (pendingStart) pendingThreadStarts.delete(id);
       if (metadata) {
         requestMetadata.delete(id);
         if (modelListRequestIds.has(id)) {
@@ -438,6 +473,7 @@
         }
         trackResponse(metadata, envelope.result);
       }
+      if (pendingStart) pendingStart.resolve();
       return;
     }
     var notification = notificationEnvelope(event && event.data);

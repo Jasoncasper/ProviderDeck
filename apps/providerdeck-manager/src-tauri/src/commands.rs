@@ -210,14 +210,14 @@ pub fn restart_providerdeck(request: LaunchRequest) -> CommandResult<Value> {
     providerdeck_core::watcher::stop_launcher_processes();
     if !providerdeck_core::watcher::stop_codex_processes() {
         return failed(
-            "ChatGPT/Codex 尚未完全退出，请稍后重试。",
+            "ChatGPT 尚未完全退出，请稍后重试。",
             json!({
                 "debugPort": request.debug_port,
                 "helperPort": request.helper_port
             }),
         );
     }
-    spawn_providerdeck_launch(request, "Codex 已请求重启，启动任务正在后台运行。")
+    spawn_providerdeck_launch(request, "ChatGPT 已请求重启，启动任务正在后台运行。")
 }
 
 fn spawn_providerdeck_launch(
@@ -1318,6 +1318,6 @@ mod tests {
         let production = source.split("#[cfg(test)]").next().unwrap();
 
         assert!(production.contains("if !providerdeck_core::watcher::stop_codex_processes()"));
-        assert!(production.contains("ChatGPT/Codex 尚未完全退出"));
+        assert!(production.contains("ChatGPT 尚未完全退出"));
     }
 }

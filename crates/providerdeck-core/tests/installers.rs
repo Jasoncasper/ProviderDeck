@@ -57,9 +57,19 @@ fn macos_bundle_metadata_contains_silent_and_manager_apps() {
     assert!(manager.app_path.ends_with("ProviderDeck.app"));
     assert!(silent.info_plist.contains("<string>providerdeck</string>"));
     assert!(
+        silent
+            .info_plist
+            .contains("<string>providerdeck.icns</string>")
+    );
+    assert!(
         manager
             .info_plist
             .contains("<string>providerdeck-manager</string>")
+    );
+    assert!(
+        manager
+            .info_plist
+            .contains("<string>providerdeck.icns</string>")
     );
     assert!(silent.launch_script.contains("providerdeck"));
     assert!(manager.launch_script.contains("providerdeck-manager"));

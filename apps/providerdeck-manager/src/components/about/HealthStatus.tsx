@@ -48,7 +48,7 @@ export function HealthStatus({ overview }: HealthStatusProps) {
       <CardContent className="space-y-3">
         {codexApp && (
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Codex 应用路径</span>
+            <span className="text-muted-foreground">ChatGPT 应用路径</span>
             <span className="font-mono text-xs max-w-[200px] truncate" title={codexApp.path ?? ""}>
               {codexApp.path || "未检测到"}
             </span>

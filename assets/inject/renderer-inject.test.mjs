@@ -168,7 +168,45 @@ async function establishBinding(harness, model, modelProvider) {
   await drain();
   const methods = harness.nativeRequests.map((request) => request.method);
   assert.deepEqual(methods, ["thread/read", "thread/unsubscribe", "thread/resume", "turn/start"]);
-  assert.equal(harness.nativeRequests[0].params.includeTurns, false);
+  assert.equal(harness.nativeRequests[0].params.includeTurns, true);
+}
+
+{
+  const harness = await createHarness(async (method, params) => {
+    if (method === "thread/read") {
+      return {
+        thread: {
+          id: params.threadId,
+          modelProvider: "openai",
+          status: { type: "idle" },
+          turns: [],
+        },
+      };
+    }
+    if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+    if (method === "thread/resume") {
+      return {
+        thread: { id: params.threadId, status: { type: "idle" } },
+        model: params.model,
+        modelProvider: params.modelProvider,
+      };
+    }
+    return { turn: { id: "turn-first", status: "inProgress" } };
+  });
+  requestEvent(harness, 35, "turn/start", {
+    threadId: "thread-created-outside-renderer-hook",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "first turn" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/read", "turn/start"],
+    "a zero-turn thread must send its first turn without unsubscribe/resume",
+  );
+  assert.equal(harness.nativeRequests[0].params.includeTurns, true);
+  assert.equal(harness.nativeRequests[1].params.model, "vendor:model:v2");
+  assert.equal(harness.nativeRequests[1].params.modelProvider, "providerdeck-team_proxy");
 }
 
 {
@@ -206,6 +244,70 @@ async function establishBinding(harness, model, modelProvider) {
   assert.equal(
     start.params.config["model_providers.providerdeck-team_proxy"].base_url,
     "http://127.0.0.1:57322/provider/team_proxy/v1",
+  );
+}
+
+{
+  const harness = await createHarness(async (method, params) => {
+    if (method === "thread/start") {
+      return { thread: { id: "thread-fresh", status: { type: "idle" } } };
+    }
+    if (method === "thread/read") {
+      return { thread: { id: params.threadId, status: { type: "idle" } } };
+    }
+    if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+    if (method === "thread/resume") {
+      return {
+        thread: { id: params.threadId, status: { type: "idle" } },
+        model: params.model,
+        modelProvider: params.modelProvider,
+      };
+    }
+    return { turn: { id: "turn-fresh", status: "inProgress" } };
+  });
+  requestEvent(harness, 33, "thread/start", { model: "gpt-5.4" });
+  await drain();
+  requestEvent(harness, 34, "turn/start", {
+    threadId: "thread-fresh",
+    model: "gpt-5.4",
+    input: [{ type: "text", text: "first turn" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/start", "turn/start"],
+    "a fresh thread must not be resumed before its first turn is persisted",
+  );
+}
+
+{
+  let resolveThreadStart;
+  const threadStartResult = new Promise((resolve) => { resolveThreadStart = resolve; });
+  const harness = await createHarness(async (method) => {
+    if (method === "thread/start") return threadStartResult;
+    if (method === "thread/read") return new Promise(() => {});
+    return { turn: { id: "turn-racing", status: "inProgress" } };
+  });
+  requestEvent(harness, 36, "thread/start", { model: "gpt-5.4" });
+  await tick();
+  requestEvent(harness, 37, "turn/start", {
+    threadId: "thread-racing",
+    model: "gpt-5.4",
+    input: [{ type: "text", text: "first turn races thread start" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/start"],
+    "the first turn must wait for its matching thread/start response instead of blocking on thread/read",
+  );
+
+  resolveThreadStart({ thread: { id: "thread-racing", status: { type: "idle" } } });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/start", "turn/start"],
+    "the first turn must be released after thread/start establishes its binding",
   );
 }
 
