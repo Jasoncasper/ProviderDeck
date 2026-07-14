@@ -332,7 +332,12 @@
     var threadId = request.params.threadId;
     if (!threadBindings.has(threadId)) {
       var pendingStart = matchingPendingThreadStart(target);
-      if (pendingStart) await pendingStart.promise;
+      if (pendingStart) {
+        // Codex can queue the first turn behind thread/start, but its response is
+        // not always delivered to the renderer message channel.
+        request.params = applyTarget(request.params, target);
+        return forwardEvent(event);
+      }
     }
     if (threadStatuses.get(threadId) === "active") {
       var superseded = queuedTurns.get(threadId);

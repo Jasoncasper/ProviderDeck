@@ -281,34 +281,29 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
-  let resolveThreadStart;
-  const threadStartResult = new Promise((resolve) => { resolveThreadStart = resolve; });
   const harness = await createHarness(async (method) => {
-    if (method === "thread/start") return threadStartResult;
+    if (method === "thread/start") return new Promise(() => {});
     if (method === "thread/read") return new Promise(() => {});
     return { turn: { id: "turn-racing", status: "inProgress" } };
   });
-  requestEvent(harness, 36, "thread/start", { model: "gpt-5.4" });
+  requestEvent(harness, 36, "thread/start", {
+    model: "providerdeck:team_proxy:vendor:model:v2",
+  });
   await tick();
   requestEvent(harness, 37, "turn/start", {
     threadId: "thread-racing",
-    model: "gpt-5.4",
+    model: "providerdeck:team_proxy:vendor:model:v2",
     input: [{ type: "text", text: "first turn races thread start" }],
   });
   await drain();
   assert.deepEqual(
     harness.nativeRequests.map((request) => request.method),
-    ["thread/start"],
-    "the first turn must wait for its matching thread/start response instead of blocking on thread/read",
-  );
-
-  resolveThreadStart({ thread: { id: "thread-racing", status: { type: "idle" } } });
-  await drain();
-  assert.deepEqual(
-    harness.nativeRequests.map((request) => request.method),
     ["thread/start", "turn/start"],
-    "the first turn must be released after thread/start establishes its binding",
+    "the first turn must not wait for a thread/start response that may not be visible to the renderer",
   );
+  const turn = harness.nativeRequests.at(-1);
+  assert.equal(turn.params.model, "vendor:model:v2");
+  assert.equal(turn.params.modelProvider, "providerdeck-team_proxy");
 }
 
 {
