@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.4 (2026-07-14)
+
+### 修复
+
+- 内部 `thread/read`、`thread/unsubscribe`、`thread/resume` 改用 Codex 已注册的 AppServer 请求客户端，不再伪造无法匹配 Promise 的 `providerdeck-*` request ID。
+- 新任务尚未物化时，首条 `turn/start` 直接携带目标 provider 发出，避免创建任务失败和 30 秒超时。
+
 ## v1.0.3 (2026-07-14)
 
 ### 修复

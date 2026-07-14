@@ -1172,7 +1172,7 @@ async fn renderer_bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
     let result = crate::bridge::evaluate_script(
         websocket_url,
-        "window.__providerDeckTransportPatchLoaded===true && window.__providerDeckInstalled===true && typeof window.__providerDeckInterceptPostMessage==='function'",
+        "window.__providerDeckTransportPatchLoaded===true && window.__providerDeckInstalled===true && typeof window.__providerDeckInterceptPostMessage==='function' && typeof window.__providerDeckSendCliRequest==='function'",
     )
     .await?;
     Ok(runtime_evaluate_result_is_true(&result))

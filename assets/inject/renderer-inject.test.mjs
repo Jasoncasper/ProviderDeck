@@ -62,9 +62,10 @@ async function createHarness(rpcHandler = async (method, params) => {
     };
   }
   return { turn: { id: "turn-1", status: "inProgress" } };
-}, transportLoaded = true, pendingPostMessages = [], runtimeCatalog = catalog) {
+}, transportLoaded = true, pendingPostMessages = [], runtimeCatalog = catalog, options = {}) {
   const listeners = new Map();
   const nativeRequests = [];
+  const appCommandCalls = [];
   const bridgeCalls = [];
   const emittedMessages = [];
   const fetchCalls = [];
@@ -82,6 +83,10 @@ async function createHarness(rpcHandler = async (method, params) => {
   const sendNative = (detail) => {
     const request = structuredClone(detail.request);
     nativeRequests.push(request);
+    if (options.orphanProviderDeckResponses && String(request.id).startsWith("providerdeck-")) {
+      void Promise.resolve().then(() => rpcHandler(request.method, request.params ?? {}));
+      return Promise.resolve();
+    }
     Promise.resolve()
       .then(() => rpcHandler(request.method, request.params ?? {}))
       .then((result) => emitMessage({ type: "mcp-response", message: { id: request.id, result } }))
@@ -125,6 +130,16 @@ async function createHarness(rpcHandler = async (method, params) => {
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
+  sandbox.__providerDeckSendCliRequest = async (payload) => {
+    const call = structuredClone(payload);
+    appCommandCalls.push(call);
+    nativeRequests.push({
+      id: `app-command-${appCommandCalls.length}`,
+      method: call.method,
+      params: call.params ?? {},
+    });
+    return rpcHandler(call.method, call.params ?? {});
+  };
   sandbox.__providerDeckBridge = async (path, payload) => {
     bridgeCalls.push({ path, payload: structuredClone(payload ?? {}) });
     if (path === "/providerdeck/catalog") return structuredClone(runtimeCatalog);
@@ -132,7 +147,7 @@ async function createHarness(rpcHandler = async (method, params) => {
   };
   vm.runInNewContext(script, sandbox, { filename: "renderer-inject.js" });
   await drain();
-  return { sandbox, nativeRequests, bridgeCalls, emittedMessages, fetchCalls, emitMessage };
+  return { sandbox, nativeRequests, appCommandCalls, bridgeCalls, emittedMessages, fetchCalls, emitMessage };
 }
 
 function requestEvent(harness, id, method, params) {
@@ -159,7 +174,9 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
-  const harness = await createHarness();
+  const harness = await createHarness(undefined, true, [], catalog, {
+    orphanProviderDeckResponses: true,
+  });
   requestEvent(harness, 31, "turn/start", {
     threadId: "thread-not-yet-tracked",
     model: "providerdeck:team_proxy:vendor:model:v2",
@@ -168,7 +185,33 @@ async function establishBinding(harness, model, modelProvider) {
   await drain();
   const methods = harness.nativeRequests.map((request) => request.method);
   assert.deepEqual(methods, ["thread/read", "thread/unsubscribe", "thread/resume", "turn/start"]);
+  assert.deepEqual(
+    harness.appCommandCalls.map((call) => call.method),
+    ["thread/read", "thread/unsubscribe", "thread/resume"],
+    "internal RPC must use Codex's registered request client",
+  );
   assert.equal(harness.nativeRequests[0].params.includeTurns, true);
+}
+
+{
+  const harness = await createHarness(async (method) => {
+    if (method === "thread/read") {
+      throw new Error("thread thread-new is not materialized yet; includeTurns is unavailable before first user message");
+    }
+    return { turn: { id: "turn-first", status: "inProgress" } };
+  }, true, [], catalog, { orphanProviderDeckResponses: true });
+  requestEvent(harness, 38, "turn/start", {
+    threadId: "thread-new",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "first turn" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/read", "turn/start"],
+    "an unmaterialized thread must receive its first turn without resume",
+  );
+  assert.deepEqual(harness.appCommandCalls.map((call) => call.method), ["thread/read"]);
 }
 
 {

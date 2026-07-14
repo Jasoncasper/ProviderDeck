@@ -12,13 +12,11 @@
   var modelListRequestIds = new Set();
   var requestMetadata = new Map();
   var pendingThreadStarts = new Map();
-  var internalRequests = new Map();
   var threadBindings = new Map();
   var threadStatuses = new Map();
   var queuedTurns = new Map();
   var pendingBindings = new Map();
   var hostId = "local";
-  var internalSequence = 0;
 
   function loadCatalog() {
     if (catalogPromise) return catalogPromise;
@@ -170,15 +168,11 @@
   }
 
   function sendInternal(method, params) {
-    return new Promise(function (resolve, reject) {
-      var id = "providerdeck-" + (++internalSequence);
-      internalRequests.set(id, { resolve: resolve, reject: reject });
-      forwardDetail({
-        type: "mcp-request",
-        hostId: hostId,
-        request: { id: id, method: method, params: params || {} },
-      });
-    });
+    var sendCliRequest = window.__providerDeckSendCliRequest;
+    if (typeof sendCliRequest !== "function") {
+      return Promise.reject(new Error("Codex AppServer request bridge is unavailable"));
+    }
+    return Promise.resolve(sendCliRequest({ hostId: hostId, method: method, params: params || {} }));
   }
 
   function forwardDetail(detail) {
@@ -234,10 +228,23 @@
     return applyTarget({ threadId: threadId }, target);
   }
 
+  function isUnmaterializedThreadError(error) {
+    var message = String(error && error.message || error);
+    return message.indexOf("not materialized yet") >= 0
+      && message.indexOf("includeTurns is unavailable before first user message") >= 0;
+  }
+
   async function performSwitch(threadId, target) {
     var original = threadBindings.get(threadId);
     if (!original) {
-      var current = await sendInternal("thread/read", { threadId: threadId, includeTurns: true });
+      var current;
+      try {
+        current = await sendInternal("thread/read", { threadId: threadId, includeTurns: true });
+      } catch (error) {
+        if (!isUnmaterializedThreadError(error)) throw error;
+        threadBindings.set(threadId, bindingFromTarget(target));
+        return;
+      }
       var currentThread = current && current.thread;
       if (currentThread && Array.isArray(currentThread.turns) && currentThread.turns.length === 0) {
         threadBindings.set(threadId, bindingFromTarget(target));
@@ -460,13 +467,6 @@
     var envelope = responseEnvelope(event && event.data);
     if (envelope) {
       var id = String(envelope.id);
-      var internal = internalRequests.get(id);
-      if (internal) {
-        internalRequests.delete(id);
-        if (envelope.error) internal.reject(new Error(envelope.error.message || "app-server request failed"));
-        else internal.resolve(envelope.result);
-        return;
-      }
       var metadata = requestMetadata.get(id);
       var pendingStart = pendingThreadStarts.get(id);
       if (pendingStart) pendingThreadStarts.delete(id);

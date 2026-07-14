@@ -18,6 +18,8 @@ pub const BRIDGE_BINDING_NAME: &str = "providerDeckBridgeV1";
 const RENDERER_BRIDGE_EVENT: &str = "codex-message-from-view";
 const RENDERER_BRIDGE_HOOK: &str = "__providerDeckInterceptPostMessage";
 const RENDERER_BRIDGE_PATCH_LOADED: &str = "__providerDeckTransportPatchLoaded";
+const APP_SERVER_HANDLER_ERROR: &str = "Missing AppServer request message handler";
+const SEND_CLI_REQUEST_COMMAND: &str = "send-cli-request-for-host";
 const CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -43,10 +45,44 @@ pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<Strin
     if matches > 1 {
         bail!("multiple Codex renderer bridges matched; refusing ambiguous patch");
     }
+
+    let marker = source
+        .find(APP_SERVER_HANDLER_ERROR)
+        .context("Codex AppServer request client marker is missing")?;
+    let mut gateway_end = source.len().min(marker + 2048);
+    while !source.is_char_boundary(gateway_end) {
+        gateway_end -= 1;
+    }
+    let gateway_source = &source[marker..gateway_end];
+    let gateway = Regex::new(
+        r"function\s+([A-Za-z_$][A-Za-z0-9_$]*)\(([A-Za-z_$][A-Za-z0-9_$]*),([A-Za-z_$][A-Za-z0-9_$]*)\)\{return\s+([A-Za-z_$][A-Za-z0-9_$]*)\.sendRequest\(([A-Za-z_$][A-Za-z0-9_$]*),([A-Za-z_$][A-Za-z0-9_$]*)\)\}",
+    )?;
+    let gateways = gateway
+        .captures_iter(gateway_source)
+        .filter(|captures| captures[2] == captures[5] && captures[3] == captures[6])
+        .collect::<Vec<_>>();
+    if gateways.len() != 1 {
+        bail!(
+            "expected one Codex AppServer request gateway near its handler, found {}",
+            gateways.len()
+        );
+    }
+    let gateway_match = gateways[0]
+        .get(0)
+        .context("Codex AppServer request gateway match is missing")?;
+    let gateway_name = &gateways[0][1];
+    let insertion_offset = marker + gateway_match.end();
+    let mut source_with_request_bridge = String::with_capacity(source.len() + 160);
+    source_with_request_bridge.push_str(&source[..insertion_offset]);
+    source_with_request_bridge.push_str(&format!(
+        ";window.__providerDeckSendCliRequest=payload=>[`thread/read`,`thread/unsubscribe`,`thread/resume`].includes(payload?.method)?{gateway_name}(`{SEND_CLI_REQUEST_COMMAND}`,payload):Promise.reject(Error(`Unsupported ProviderDeck AppServer request`))"
+    ));
+    source_with_request_bridge.push_str(&source[insertion_offset..]);
+
     let replacement = format!(
         "postMessage:${{1}}=>{{if(window.{RENDERER_BRIDGE_HOOK}?.(${{1}})===true)return;let ${{2}}=!1,${{3}}=window.electronBridge;"
     );
-    let patched = bridge.replace(source, replacement);
+    let patched = bridge.replace(&source_with_request_bridge, replacement);
     Ok(Some(format!(
         "window.{RENDERER_BRIDGE_PATCH_LOADED}=true;window.__providerDeckPendingPostMessages=window.__providerDeckPendingPostMessages||[];window.{RENDERER_BRIDGE_HOOK}=window.{RENDERER_BRIDGE_HOOK}||function(detail){{window.__providerDeckPendingPostMessages.push(detail);return true}};{patched}"
     )))

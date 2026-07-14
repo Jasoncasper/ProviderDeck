@@ -62,7 +62,7 @@ fn injection_script_uses_narrow_app_server_coordination() {
 
 #[test]
 fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
-    let source = r#"sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
+    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
 
     let patched = bridge::patch_renderer_bridge_source(source)
         .expect("current Codex renderer bridge should be recognized")
@@ -76,6 +76,8 @@ fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
         .expect("native Electron IPC send should remain available");
     assert!(hook < ipc, "ProviderDeck hook must run before native IPC");
     assert!(patched.contains("__providerDeckPendingPostMessages"));
+    assert!(patched.contains("window.__providerDeckSendCliRequest"));
+    assert!(patched.contains("gE(`send-cli-request-for-host`,payload)"));
     assert!(patched.contains("return true"));
 }
 
@@ -118,7 +120,7 @@ fn renderer_prearm_auto_attach_waits_for_page_before_first_execution() {
 
 #[tokio::test]
 async fn prearm_renderer_bridge_interceptor_enables_fetch_before_resuming_without_reload() {
-    let source = r#"sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}}"#;
+    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}}"#;
     let (url, request_rx) = spawn_cdp_server(move |mut socket| async move {
         let auto_attach = recv_json(&mut socket).await;
         assert_eq!(auto_attach["method"], "Target.setAutoAttach");
@@ -190,11 +192,9 @@ async fn prearm_renderer_bridge_interceptor_enables_fetch_before_resuming_withou
         let patched = base64::engine::general_purpose::STANDARD
             .decode(fulfill["params"]["body"].as_str().unwrap())
             .unwrap();
-        assert!(
-            String::from_utf8(patched)
-                .unwrap()
-                .contains("__providerDeckInterceptPostMessage")
-        );
+        let patched = String::from_utf8(patched).unwrap();
+        assert!(patched.contains("__providerDeckInterceptPostMessage"));
+        assert!(patched.contains("__providerDeckSendCliRequest"));
         send_json(
             &mut socket,
             json!({ "id": fulfill["id"], "sessionId": "page-session", "result": {} }),
