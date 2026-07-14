@@ -84,7 +84,7 @@ pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<Strin
     );
     let patched = bridge.replace(&source_with_request_bridge, replacement);
     Ok(Some(format!(
-        "window.{RENDERER_BRIDGE_PATCH_LOADED}=true;window.__providerDeckPendingPostMessages=window.__providerDeckPendingPostMessages||[];window.{RENDERER_BRIDGE_HOOK}=window.{RENDERER_BRIDGE_HOOK}||function(detail){{window.__providerDeckPendingPostMessages.push(detail);return true}};{patched}"
+        "window.{RENDERER_BRIDGE_PATCH_LOADED}=true;window.__providerDeckPendingPostMessages=window.__providerDeckPendingPostMessages||[];window.{RENDERER_BRIDGE_HOOK}=window.{RENDERER_BRIDGE_HOOK}||function(detail){{if(![`model/list`,`thread/list`,`config/value/write`,`config/batchWrite`,`thread/start`,`turn/start`].includes(detail?.request?.method))return false;window.__providerDeckPendingPostMessages.push(detail);return true}};{patched}"
     )))
 }
 

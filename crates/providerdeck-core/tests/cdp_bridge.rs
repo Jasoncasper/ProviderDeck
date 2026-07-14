@@ -83,6 +83,19 @@ fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
 }
 
 #[test]
+fn renderer_bridge_bootstrap_does_not_buffer_unrelated_app_server_requests() {
+    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}}"#;
+
+    let patched = bridge::patch_renderer_bridge_source(source)
+        .expect("current Codex renderer bridge should be recognized")
+        .expect("renderer bridge should require a patch");
+
+    assert!(patched.contains(
+        "if(![`model/list`,`thread/list`,`config/value/write`,`config/batchWrite`,`thread/start`,`turn/start`].includes(detail?.request?.method))return false"
+    ));
+}
+
+#[test]
 fn renderer_bridge_patch_ignores_unrelated_javascript() {
     let source = "window.electronBridge.sendMessageFromView(message);";
 
