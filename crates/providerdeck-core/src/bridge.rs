@@ -75,7 +75,7 @@ pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<Strin
     let mut source_with_request_bridge = String::with_capacity(source.len() + 160);
     source_with_request_bridge.push_str(&source[..insertion_offset]);
     source_with_request_bridge.push_str(&format!(
-        ";window.__providerDeckSendCliRequest=payload=>[`thread/read`,`thread/unsubscribe`,`thread/resume`].includes(payload?.method)?{gateway_name}(`{SEND_CLI_REQUEST_COMMAND}`,payload):Promise.reject(Error(`Unsupported ProviderDeck AppServer request`))"
+        ";window.__providerDeckSendCliRequest=payload=>[`thread/read`,`thread/unsubscribe`,`thread/resume`].includes(payload?.method)?{gateway_name}(`{SEND_CLI_REQUEST_COMMAND}`,payload):Promise.reject(Error(`Unsupported ProviderDeck AppServer request`));"
     ));
     source_with_request_bridge.push_str(&source[insertion_offset..]);
 

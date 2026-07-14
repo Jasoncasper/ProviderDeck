@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.5 (2026-07-14)
+
+### 修复
+
+- 修复 AppServer 请求桥插入压缩 renderer bundle 后缺少语句终止符的问题，避免 ChatGPT renderer 语法错误、健康检查失败以及 launcher 自动终止 ChatGPT 进程。
+
 ## v1.0.4 (2026-07-14)
 
 ### 修复

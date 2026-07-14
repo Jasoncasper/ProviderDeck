@@ -62,7 +62,7 @@ fn injection_script_uses_narrow_app_server_coordination() {
 
 #[test]
 fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
-    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
+    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}var _E=1;sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
 
     let patched = bridge::patch_renderer_bridge_source(source)
         .expect("current Codex renderer bridge should be recognized")
@@ -78,6 +78,7 @@ fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
     assert!(patched.contains("__providerDeckPendingPostMessages"));
     assert!(patched.contains("window.__providerDeckSendCliRequest"));
     assert!(patched.contains("gE(`send-cli-request-for-host`,payload)"));
+    assert!(patched.contains("Unsupported ProviderDeck AppServer request`));var _E=1"));
     assert!(patched.contains("return true"));
 }
 
