@@ -247,12 +247,20 @@
 
   function matchingPendingThreadStart(target) {
     var binding = bindingFromTarget(target);
-    var starts = Array.from(pendingThreadStarts.values());
-    return starts.find(function (start) {
+    var starts = Array.from(pendingThreadStarts.entries());
+    var match = starts.find(function (entry) {
+      var start = entry[1];
       return start.binding
         && start.binding.model === binding.model
         && start.binding.providerId === binding.providerId;
     });
+    if (!match && starts.length === 1) match = starts[0];
+    return match || null;
+  }
+
+  function finishPendingThreadStart(entry) {
+    pendingThreadStarts.delete(entry[0]);
+    entry[1].resolve();
   }
 
   function verifyResume(result, threadId, target) {
@@ -444,11 +452,17 @@
     var threadId = request.params.threadId;
     if (!threadBindings.has(threadId)) {
       var pendingStart = matchingPendingThreadStart(target);
-      if (pendingStart || pendingThreadStarts.size === 1) {
-        // Codex can queue the first turn behind thread/start, but its response is
-        // not always delivered to the renderer message channel.
-        request.params = applyTurnTarget(request.params, target);
-        return forwardEvent(event);
+      if (pendingStart) {
+        var history = await Promise.resolve(
+          bridge("/providerdeck/thread-history/safety", { threadId: threadId })
+        ).catch(function () { return null; });
+        finishPendingThreadStart(pendingStart);
+        if (!history || history.status !== "ok" || history.rolloutFound !== true) {
+          // Codex can queue the first turn behind thread/start, but its response is
+          // not always delivered to the renderer message channel.
+          request.params = applyTurnTarget(request.params, target);
+          return forwardEvent(event);
+        }
       }
     }
     if (threadStatuses.get(threadId) === "active") {

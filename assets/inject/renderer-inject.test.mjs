@@ -357,6 +357,101 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
+  const harness = await createHarness(async (method, params) => {
+    if (method === "thread/start") return new Promise(() => {});
+    if (method === "thread/read") {
+      return {
+        thread: {
+          id: params.threadId,
+          model: "gpt-5.4",
+          modelProvider: "openai",
+          status: { type: "idle" },
+          turns: [{ id: "turn-existing" }],
+        },
+        model: "gpt-5.4",
+        modelProvider: "openai",
+      };
+    }
+    if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+    if (method === "thread/resume") {
+      return {
+        thread: { id: params.threadId, status: { type: "idle" } },
+        model: params.model,
+        modelProvider: params.modelProvider,
+      };
+    }
+    return { turn: { id: "turn-pending-start", status: "inProgress" } };
+  });
+  requestEvent(harness, 43, "thread/start", { model: "gpt-5.4" });
+  await tick();
+  requestEvent(harness, 44, "turn/start", {
+    threadId: "thread-new-with-missing-start-response",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "first turn" }],
+  });
+  await drain();
+  requestEvent(harness, 45, "turn/start", {
+    threadId: "thread-existing-history",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "continue history" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/start", "turn/start", "thread/read", "thread/unsubscribe", "thread/resume", "turn/start"],
+    "a completed first turn must not leave thread/start pending for later history turns",
+  );
+}
+
+{
+  const harness = await createHarness(async (method, params) => {
+    if (method === "thread/start") return new Promise(() => {});
+    if (method === "thread/read") {
+      return {
+        thread: {
+          id: params.threadId,
+          model: "gpt-5.4",
+          modelProvider: "openai",
+          status: { type: "idle" },
+          turns: [{ id: "turn-existing" }],
+        },
+        model: "gpt-5.4",
+        modelProvider: "openai",
+      };
+    }
+    if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+    if (method === "thread/resume") {
+      return {
+        thread: { id: params.threadId, status: { type: "idle" } },
+        model: params.model,
+        modelProvider: params.modelProvider,
+      };
+    }
+    return { turn: { id: "turn-history", status: "inProgress" } };
+  }, true, [], catalog, {
+    historySafety: {
+      status: "ok",
+      rolloutFound: true,
+      requiresCompaction: false,
+      model: null,
+    },
+  });
+  requestEvent(harness, 46, "thread/start", { model: "gpt-5.4" });
+  await tick();
+  requestEvent(harness, 47, "turn/start", {
+    threadId: "thread-existing-after-abandoned-start",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "continue history" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/start", "thread/read", "thread/unsubscribe", "thread/resume", "turn/start"],
+    "an abandoned thread/start must not classify an existing rollout as a new task",
+  );
+}
+
+{
   const harness = await createHarness();
   await establishBinding(harness, "gpt-5.3-codex-spark", "openai");
   requestEvent(harness, 39, "turn/start", {

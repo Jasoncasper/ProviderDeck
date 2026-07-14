@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.9 (2026-07-14)
+
+### 修复
+
+- `thread/start` 响应未回传 renderer 时，首个关联 `turn/start` 会一次性消费 pending 记录，不再让残留状态持续影响后续任务。
+- pending 新任务被放弃后，历史任务发送消息会先用本机 `rolloutFound` 判定其已有历史，再执行标准 `thread/read` / `thread/resume`，避免被误判为新任务并提示“创建任务时出错”。
+
 ## v1.0.8 (2026-07-14)
 
 ### 修复
