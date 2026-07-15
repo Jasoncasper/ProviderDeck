@@ -36,6 +36,13 @@ fn bridge_script_defines_expected_globals_and_binding() {
 }
 
 #[test]
+fn bridge_script_keeps_existing_bridge_callbacks_during_reinjection() {
+    let script = bridge::build_bridge_script(BRIDGE_BINDING_NAME);
+
+    assert!(script.contains("if (window.__providerDeckBridge) return;"));
+}
+
+#[test]
 fn injection_script_prefixes_runtime_catalog_and_version_globals() {
     let script = assets::injection_script(57421);
 
