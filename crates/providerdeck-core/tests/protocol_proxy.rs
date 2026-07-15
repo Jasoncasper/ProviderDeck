@@ -129,6 +129,33 @@ fn responses_request_maps_developer_role_to_system_for_chat_upstream() {
 }
 
 #[test]
+fn responses_request_ignores_compaction_additional_tools_metadata() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5.6-terra",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": []
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "compact this thread" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"],
+        json!([{ "role": "user", "content": "compact this thread" }])
+    );
+}
+
+#[test]
 fn responses_request_preserves_reasoning_content_for_thinking_followup() {
     let converted = responses_to_chat_completions(json!({
         "model": "deepseek-reasoner",

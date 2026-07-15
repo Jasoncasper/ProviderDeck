@@ -28,7 +28,7 @@ macOS 构建：
 
 ```bash
 cargo build --release --workspace
-bash scripts/installer/macos/package-dmg.sh 1.0.10 aarch64
+bash scripts/installer/macos/package-dmg.sh 1.0.11 aarch64
 ```
 
 ## 配置

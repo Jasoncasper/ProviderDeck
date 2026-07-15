@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.11 (2026-07-15)
+
+### 修复
+
+- 切回官方模型前执行 `thread/compact/start` 时忽略非对话的 `additional_tools` 元数据，避免其被错误转换为 `system content:null` 后遭代理上游拒绝；历史压缩不再因连续 `400 Bad Request` 阻塞 `turn/start` 并触发“创建任务超时”。
+
 ## v1.0.10 (2026-07-14)
 
 ### 修复

@@ -1813,6 +1813,8 @@ fn append_responses_item(
     seen_tool_call_ids: &mut BTreeSet<String>,
 ) {
     match item.get("type").and_then(Value::as_str) {
+        // Compaction metadata configures tools but is not a conversational message.
+        Some("additional_tools") => {}
         Some("function_call") => {
             let name = responses_history_function_name(item);
             if name.is_empty() {
