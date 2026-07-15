@@ -212,6 +212,7 @@ pub fn build_bridge_script(binding_name: &str) -> String {
     format!(
         r#"
 (() => {{
+  if (window.__providerDeckBridge) return;
   window.__providerDeckCallbacks = new Map();
   window.__providerDeckSeq = 0;
   window.__providerDeckResolve = (id, result) => {{
