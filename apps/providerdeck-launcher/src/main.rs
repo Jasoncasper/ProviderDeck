@@ -297,6 +297,12 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
+    async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+        self.core
+            .start_bridge_watchdog(debug_port, helper_port)
+            .await
+    }
+
     async fn write_status(&self, status: &str) {
         self.core.write_status(status).await;
     }
@@ -489,6 +495,22 @@ mod tests {
 
         assert!(production.contains("async fn repair_codex_config"));
         assert!(production.contains("self.core.repair_codex_config(helper_port).await"));
+    }
+
+    #[test]
+    fn launcher_delegates_bridge_watchdog_to_core_hooks() {
+        let source = include_str!("main.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let watchdog_impl = production
+            .split("async fn start_bridge_watchdog")
+            .nth(1)
+            .unwrap()
+            .split("async fn write_status")
+            .next()
+            .unwrap();
+
+        assert!(watchdog_impl.contains("self.core"));
+        assert!(watchdog_impl.contains(".start_bridge_watchdog(debug_port, helper_port)"));
     }
 
     #[test]
