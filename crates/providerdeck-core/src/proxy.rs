@@ -1,4 +1,11 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use serde_json::{Value, json};
+
+static CODEX_PROXY_SNAPSHOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 pub fn has_proxy_environment(env: &HashMap<String, String>) -> bool {
     [
@@ -15,6 +22,173 @@ pub fn has_proxy_environment(env: &HashMap<String, String>) -> bool {
 
 pub fn detect_system_proxy() -> Option<String> {
     platform_system_proxy()
+}
+
+pub fn proxy_url_from_environment(env: &HashMap<String, String>) -> Option<String> {
+    [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ]
+    .into_iter()
+    .find_map(|name| env.get(name).filter(|value| !value.is_empty()).cloned())
+}
+
+pub fn set_codex_proxy_snapshot(proxy: Option<String>) {
+    let configured = proxy.as_ref().is_some_and(|value| !value.is_empty());
+    let endpoint = proxy
+        .as_deref()
+        .and_then(parse_proxy_endpoint)
+        .map(|endpoint| endpoint.label());
+    let snapshot = CODEX_PROXY_SNAPSHOT.get_or_init(|| Mutex::new(None));
+    *snapshot.lock().expect("Codex proxy snapshot lock poisoned") = proxy;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "codex.proxy_snapshot",
+        json!({
+            "configured": configured,
+            "endpoint": endpoint,
+        }),
+    );
+}
+
+pub async fn codex_network_safety() -> Value {
+    let proxy = CODEX_PROXY_SNAPSHOT
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("Codex proxy snapshot lock poisoned")
+        .clone();
+    let result = network_safety_for_proxy(proxy.as_deref()).await;
+    if result.get("status").and_then(Value::as_str) == Some("unavailable") {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "codex.proxy_unavailable",
+            json!({
+                "endpoint": result.get("endpoint").cloned().unwrap_or(Value::Null),
+            }),
+        );
+    }
+    result
+}
+
+pub async fn network_safety_for_proxy(proxy: Option<&str>) -> Value {
+    let Some(proxy) = proxy else {
+        return json!({
+            "status": "ok",
+            "proxyConfigured": false,
+            "checked": false,
+        });
+    };
+    let Some(endpoint) = parse_proxy_endpoint(proxy) else {
+        return json!({
+            "status": "ok",
+            "proxyConfigured": true,
+            "checked": false,
+        });
+    };
+    if !endpoint.is_loopback() {
+        return json!({
+            "status": "ok",
+            "proxyConfigured": true,
+            "checked": false,
+        });
+    }
+
+    let endpoint_label = endpoint.label();
+    let reachable = tokio::time::timeout(
+        Duration::from_millis(350),
+        tokio::net::TcpStream::connect((endpoint.host.as_str(), endpoint.port)),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok());
+    if reachable {
+        return json!({
+            "status": "ok",
+            "proxyConfigured": true,
+            "checked": true,
+            "endpoint": endpoint_label,
+        });
+    }
+
+    json!({
+        "status": "unavailable",
+        "proxyConfigured": true,
+        "checked": true,
+        "endpoint": endpoint_label,
+        "message": format!(
+            "Codex 使用的本地代理 {endpoint_label} 当前不可达，请先恢复代理连接后重试；如果代理端口已切换，请重启 Codex 以刷新配置"
+        ),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProxyEndpoint {
+    host: String,
+    port: u16,
+}
+
+impl ProxyEndpoint {
+    fn is_loopback(&self) -> bool {
+        self.host.eq_ignore_ascii_case("localhost")
+            || self
+                .host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    }
+
+    fn label(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+}
+
+fn parse_proxy_endpoint(proxy: &str) -> Option<ProxyEndpoint> {
+    let proxy = proxy.trim();
+    if proxy.is_empty() {
+        return None;
+    }
+    let (scheme, remainder) = proxy
+        .split_once("://")
+        .map(|(scheme, remainder)| (Some(scheme), remainder))
+        .unwrap_or((None, proxy));
+    let authority = remainder
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit_once('@')
+        .map(|(_, authority)| authority)
+        .unwrap_or(remainder.split(['/', '?', '#']).next().unwrap_or_default());
+    let default_port = match scheme.map(str::to_ascii_lowercase).as_deref() {
+        Some("https") => 443,
+        Some("socks") | Some("socks5") | Some("socks5h") => 1080,
+        _ => 80,
+    };
+
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, suffix) = bracketed.split_once(']')?;
+        let port = suffix
+            .strip_prefix(':')
+            .map(str::parse)
+            .transpose()
+            .ok()?
+            .unwrap_or(default_port);
+        (host, port)
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        (host, port.parse().ok()?)
+    } else {
+        (authority, default_port)
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(ProxyEndpoint {
+        host: host.to_string(),
+        port,
+    })
 }
 
 fn normalize_proxy_url(value: &str) -> Option<String> {

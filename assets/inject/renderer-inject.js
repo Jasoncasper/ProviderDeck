@@ -446,6 +446,16 @@
   }
 
   async function handleTurnStart(event, request) {
+    var networkSafety = await Promise.resolve(
+      bridge("/providerdeck/network/safety", {})
+    ).catch(function () { return null; });
+    if (networkSafety && networkSafety.status === "unavailable") {
+      emitRequestError(
+        request,
+        new Error(networkSafety.message || "Codex network proxy is unavailable")
+      );
+      return true;
+    }
     await loadCatalog();
     var target = targetForSelection(selectionFromParams(request.params));
     if (!target) return forwardEvent(event);

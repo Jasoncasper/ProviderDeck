@@ -5,3 +5,5 @@
 管理器的"重新注入并恢复 runtime"会重建 CDP bridge 并清理已恢复的 journal。
 
 Journal 不包含 API key 或 bearer token，也不会写入 Codex 历史目录。
+
+当 Codex 启动时使用的是本地代理，ProviderDeck 会在 `turn/start` 前检查该代理端口。代理已退出或端口已变化时，任务仍会完成创建，但首轮请求会立即返回明确错误，不再等待 AppServer 的网络重试超时；恢复代理后可直接重试，端口发生变化时需要重启 Codex 以刷新代理配置。

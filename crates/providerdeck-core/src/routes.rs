@@ -65,6 +65,7 @@ pub async fn handle_bridge_request(
         "/providerdeck/switch-journal/load" => load_switch_journal(),
         "/providerdeck/switch-journal/clear" => clear_switch_journal(),
         "/providerdeck/thread-history/safety" => thread_history_safety_value(&payload),
+        "/providerdeck/network/safety" => Ok(crate::proxy::codex_network_safety().await),
         "/settings/get" => settings_value(ctx.settings.get_settings().await),
         "/settings/set" => settings_value(ctx.settings.set_settings(payload.clone()).await),
         "/devtools/open" => ctx.runtime.open_devtools().await,

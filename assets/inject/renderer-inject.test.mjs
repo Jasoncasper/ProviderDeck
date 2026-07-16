@@ -150,6 +150,9 @@ async function createHarness(rpcHandler = async (method, params) => {
         model: null,
       });
     }
+    if (path === "/providerdeck/network/safety") {
+      return structuredClone(options.networkSafety ?? { status: "ok" });
+    }
     return { status: "ok" };
   };
   vm.runInNewContext(script, sandbox, { filename: "renderer-inject.js" });
@@ -328,6 +331,30 @@ async function establishBinding(harness, model, modelProvider) {
     ["thread/start", "turn/start"],
     "a fresh thread must not be resumed before its first turn is persisted",
   );
+}
+
+{
+  const harness = await createHarness(undefined, true, [], catalog, {
+    networkSafety: {
+      status: "unavailable",
+      message: "Codex 使用的本地代理 127.0.0.1:7890 当前不可达，请先恢复代理连接",
+    },
+  });
+  requestEvent(harness, 133, "thread/start", { model: "gpt-5.4" });
+  await drain();
+  requestEvent(harness, 134, "turn/start", {
+    threadId: "thread-proxy-unavailable",
+    model: "gpt-5.4",
+    input: [{ type: "text", text: "first turn" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/start"],
+    "an unavailable Codex proxy must fail the first turn before AppServer retries time out",
+  );
+  const response = harness.emittedMessages.find((message) => message.message?.id === 134);
+  assert.match(response.message.error.message, /127\.0\.0\.1:7890.*不可达/);
 }
 
 {

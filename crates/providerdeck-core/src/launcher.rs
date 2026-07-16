@@ -1075,6 +1075,7 @@ pub fn build_packaged_activation(
 pub fn codex_process_environment() -> HashMap<String, String> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
     let mut env = codex_process_environment_from(&env, crate::proxy::detect_system_proxy);
+    crate::proxy::set_codex_proxy_snapshot(crate::proxy::proxy_url_from_environment(&env));
     env.insert(
         crate::codex_config::RUNTIME_TOKEN_ENV.to_string(),
         crate::local_auth::runtime_bearer_token().to_string(),
