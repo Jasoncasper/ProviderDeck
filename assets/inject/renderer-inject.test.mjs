@@ -225,6 +225,29 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
+  const harness = await createHarness(async (method) => {
+    if (method === "thread/read") {
+      throw new Error("ephemeral threads do not support includeTurns");
+    }
+    return { turn: { id: "turn-ephemeral", status: "inProgress" } };
+  }, true, [], catalog, { orphanProviderDeckResponses: true });
+  requestEvent(harness, 138, "turn/start", {
+    threadId: "thread-ephemeral",
+    model: "gpt-5.6-terra",
+    input: [{ type: "text", text: "first side task turn" }],
+  });
+  await drain();
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/read", "turn/start"],
+    "an ephemeral side task must receive its first turn without history inspection",
+  );
+  assert.deepEqual(harness.appCommandCalls.map((call) => call.method), ["thread/read"]);
+  assert.equal(harness.nativeRequests.at(-1).params.model, "gpt-5.6-terra");
+  assert.equal(harness.nativeRequests.at(-1).params.modelProvider, "openai");
+}
+
+{
   const harness = await createHarness(async (method, params) => {
     if (method === "thread/read") {
       return {

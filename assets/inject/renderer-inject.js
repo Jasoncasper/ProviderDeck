@@ -351,10 +351,11 @@
     return currentBinding;
   }
 
-  function isUnmaterializedThreadError(error) {
+  function isFreshThreadHistoryUnavailableError(error) {
     var message = String(error && error.message || error);
-    return message.indexOf("not materialized yet") >= 0
-      && message.indexOf("includeTurns is unavailable before first user message") >= 0;
+    return (message.indexOf("not materialized yet") >= 0
+      && message.indexOf("includeTurns is unavailable before first user message") >= 0)
+      || message.indexOf("ephemeral threads do not support includeTurns") >= 0;
   }
 
   async function performSwitch(threadId, target) {
@@ -364,7 +365,7 @@
       try {
         current = await sendInternal("thread/read", { threadId: threadId, includeTurns: true });
       } catch (error) {
-        if (!isUnmaterializedThreadError(error)) throw error;
+        if (!isFreshThreadHistoryUnavailableError(error)) throw error;
         threadBindings.set(threadId, bindingFromTarget(target));
         return;
       }
