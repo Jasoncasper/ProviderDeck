@@ -32,57 +32,66 @@ pub type BridgeHandler = Arc<
 static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(100);
 
 pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<String>> {
-    if source.contains(RENDERER_BRIDGE_HOOK) || !source.contains(RENDERER_BRIDGE_EVENT) {
-        return Ok(None);
-    }
+    let mut patch_transport =
+        !source.contains(RENDERER_BRIDGE_HOOK) && source.contains(RENDERER_BRIDGE_EVENT);
+    let patch_gateway = !source.contains("__providerDeckSendCliRequest")
+        && source.contains(APP_SERVER_HANDLER_ERROR);
     let bridge = Regex::new(
         r"postMessage:([A-Za-z_$][A-Za-z0-9_$]*)=>\{let ([A-Za-z_$][A-Za-z0-9_$]*)=!1,([A-Za-z_$][A-Za-z0-9_$]*)=window\.electronBridge;",
     )?;
-    let matches = bridge.find_iter(source).count();
-    if matches == 0 {
+    if patch_transport {
+        let matches = bridge.find_iter(source).count();
+        if matches > 1 {
+            bail!("multiple Codex renderer bridges matched; refusing ambiguous patch");
+        }
+        patch_transport = matches == 1;
+    }
+    if !patch_transport && !patch_gateway {
         return Ok(None);
     }
-    if matches > 1 {
-        bail!("multiple Codex renderer bridges matched; refusing ambiguous patch");
-    }
 
-    let marker = source
-        .find(APP_SERVER_HANDLER_ERROR)
-        .context("Codex AppServer request client marker is missing")?;
-    let mut gateway_end = source.len().min(marker + 2048);
-    while !source.is_char_boundary(gateway_end) {
-        gateway_end -= 1;
-    }
-    let gateway_source = &source[marker..gateway_end];
-    let gateway = Regex::new(
-        r"function\s+([A-Za-z_$][A-Za-z0-9_$]*)\(([A-Za-z_$][A-Za-z0-9_$]*),([A-Za-z_$][A-Za-z0-9_$]*)\)\{return\s+([A-Za-z_$][A-Za-z0-9_$]*)\.sendRequest\(([A-Za-z_$][A-Za-z0-9_$]*),([A-Za-z_$][A-Za-z0-9_$]*)\)\}",
-    )?;
-    let gateways = gateway
-        .captures_iter(gateway_source)
-        .filter(|captures| captures[2] == captures[5] && captures[3] == captures[6])
-        .collect::<Vec<_>>();
-    if gateways.len() != 1 {
-        bail!(
-            "expected one Codex AppServer request gateway near its handler, found {}",
-            gateways.len()
+    let mut patched = source.to_string();
+    if patch_gateway {
+        let marker = source
+            .find(APP_SERVER_HANDLER_ERROR)
+            .context("Codex AppServer request client marker is missing")?;
+        let mut gateway_end = source.len().min(marker + 2048);
+        while !source.is_char_boundary(gateway_end) {
+            gateway_end -= 1;
+        }
+        let gateway_source = &source[marker..gateway_end];
+        let gateway = Regex::new(
+            r"function\s+([A-Za-z_$][A-Za-z0-9_$]*)\(([A-Za-z_$][A-Za-z0-9_$]*),([A-Za-z_$][A-Za-z0-9_$]*)\)\{return\s+([A-Za-z_$][A-Za-z0-9_$]*)\.sendRequest\(([A-Za-z_$][A-Za-z0-9_$]*),([A-Za-z_$][A-Za-z0-9_$]*)\)\}",
+        )?;
+        let gateways = gateway
+            .captures_iter(gateway_source)
+            .filter(|captures| captures[2] == captures[5] && captures[3] == captures[6])
+            .collect::<Vec<_>>();
+        if gateways.len() != 1 {
+            bail!(
+                "expected one Codex AppServer request gateway near its handler, found {}",
+                gateways.len()
+            );
+        }
+        let gateway_match = gateways[0]
+            .get(0)
+            .context("Codex AppServer request gateway match is missing")?;
+        let gateway_name = &gateways[0][1];
+        let insertion_offset = marker + gateway_match.end();
+        patched = format!(
+            "{};window.__providerDeckSendCliRequest=payload=>[`thread/read`,`thread/unsubscribe`,`thread/resume`,`thread/compact/start`].includes(payload?.method)?{gateway_name}(`{SEND_CLI_REQUEST_COMMAND}`,payload):Promise.reject(Error(`Unsupported ProviderDeck AppServer request`));{}",
+            &source[..insertion_offset],
+            &source[insertion_offset..]
         );
     }
-    let gateway_match = gateways[0]
-        .get(0)
-        .context("Codex AppServer request gateway match is missing")?;
-    let gateway_name = &gateways[0][1];
-    let insertion_offset = marker + gateway_match.end();
-    let mut source_with_request_bridge = String::with_capacity(source.len() + 160);
-    source_with_request_bridge.push_str(&source[..insertion_offset]);
-    source_with_request_bridge.push_str(&format!(
-        ";window.__providerDeckSendCliRequest=payload=>[`thread/read`,`thread/unsubscribe`,`thread/resume`,`thread/compact/start`].includes(payload?.method)?{gateway_name}(`{SEND_CLI_REQUEST_COMMAND}`,payload):Promise.reject(Error(`Unsupported ProviderDeck AppServer request`));"
-    ));
-    source_with_request_bridge.push_str(&source[insertion_offset..]);
 
+    if !patch_transport {
+        return Ok(Some(patched));
+    }
     let replacement = format!(
         "postMessage:${{1}}=>{{if(window.{RENDERER_BRIDGE_HOOK}?.(${{1}})===true)return;let ${{2}}=!1,${{3}}=window.electronBridge;"
     );
-    let patched = bridge.replace(&source_with_request_bridge, replacement);
+    let patched = bridge.replace(&patched, replacement);
     Ok(Some(format!(
         "window.{RENDERER_BRIDGE_PATCH_LOADED}=true;window.__providerDeckPendingPostMessages=window.__providerDeckPendingPostMessages||[];window.{RENDERER_BRIDGE_HOOK}=window.{RENDERER_BRIDGE_HOOK}||function(detail){{if(![`model/list`,`thread/list`,`config/value/write`,`config/batchWrite`,`thread/start`,`turn/start`].includes(detail?.request?.method))return false;window.__providerDeckPendingPostMessages.push(detail);return true}};{patched}"
     )))

@@ -92,6 +92,25 @@ fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
 }
 
 #[test]
+fn renderer_bridge_patch_supports_split_transport_and_gateway_chunks() {
+    let transport_source = r#"Dk={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
+    let gateway_source = r#"class BE{messageHandler=null;sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}VE=new BE;function UE(e,t){return VE.sendRequest(e,t)}"#;
+
+    let patched_transport = bridge::patch_renderer_bridge_source(transport_source)
+        .expect("split transport chunk should be recognized")
+        .expect("split transport chunk should require a patch");
+    assert!(patched_transport.contains("__providerDeckTransportPatchLoaded"));
+    assert!(patched_transport.contains("__providerDeckInterceptPostMessage"));
+    assert!(!patched_transport.contains("__providerDeckSendCliRequest"));
+
+    let patched_gateway = bridge::patch_renderer_bridge_source(gateway_source)
+        .expect("split AppServer gateway chunk should be recognized")
+        .expect("split AppServer gateway chunk should require a patch");
+    assert!(patched_gateway.contains("window.__providerDeckSendCliRequest"));
+    assert!(patched_gateway.contains("UE(`send-cli-request-for-host`,payload)"));
+}
+
+#[test]
 fn renderer_bridge_bootstrap_does_not_buffer_unrelated_app_server_requests() {
     let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}}"#;
 
