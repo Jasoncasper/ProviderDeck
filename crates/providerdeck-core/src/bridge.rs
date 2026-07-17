@@ -100,7 +100,7 @@ pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<Strin
 pub fn renderer_bridge_fetch_enable_params() -> Value {
     json!({
         "patterns": [{
-            "urlPattern": "*app-initial~app-main~*.js*",
+            "urlPattern": "*app-initial~*.js*",
             "resourceType": "Script",
             "requestStage": "Response"
         }]

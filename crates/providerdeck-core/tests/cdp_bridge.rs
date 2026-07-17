@@ -144,8 +144,18 @@ fn renderer_bridge_fetch_intercepts_script_responses_before_execution() {
         pattern["urlPattern"]
             .as_str()
             .expect("URL pattern should be a string")
-            .contains("app-initial~app-main~")
+            .contains("app-initial~")
     );
+}
+
+#[test]
+fn renderer_bridge_fetch_intercepts_split_runtime_chunks_without_app_main() {
+    let params = bridge::renderer_bridge_fetch_enable_params();
+    let pattern = params["patterns"][0]["urlPattern"]
+        .as_str()
+        .expect("URL pattern should be a string");
+
+    assert_eq!(pattern, "*app-initial~*.js*");
 }
 
 #[test]
