@@ -7,12 +7,20 @@ const script = fs.readFileSync(new URL("./renderer-inject.js", import.meta.url),
 const officialModel = {
   model: "gpt-5.4",
   id: "gpt-5.4",
+  upgrade: null,
+  upgradeInfo: null,
+  availabilityNux: null,
   displayName: "GPT-5.4",
   description: "Official",
   hidden: false,
   isDefault: true,
   defaultReasoningEffort: "medium",
   supportedReasoningEfforts: [],
+  inputModalities: ["text", "image"],
+  supportsPersonality: false,
+  additionalSpeedTiers: [],
+  serviceTiers: [],
+  defaultServiceTier: null,
 };
 
 const catalog = {
@@ -196,6 +204,34 @@ async function establishBinding(harness, model, modelProvider) {
   assert.equal(models[0].model, "gpt-5.4", "official models must stay unchanged");
   assert.equal(models[1].model, "providerdeck:team_proxy:vendor:model:v2");
   assert.equal(models[1].displayName, "Vendor V2");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(models[1])),
+    {
+      model: "providerdeck:team_proxy:vendor:model:v2",
+      id: "providerdeck:team_proxy:vendor:model:v2",
+      slug: "providerdeck:team_proxy:vendor:model:v2",
+      name: "Vendor V2",
+      displayName: "Vendor V2",
+      description: "Team Proxy",
+      hidden: false,
+      isDefault: false,
+      upgrade: null,
+      upgradeInfo: null,
+      availabilityNux: null,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low", description: "low effort" },
+        { reasoningEffort: "medium", description: "medium effort" },
+        { reasoningEffort: "high", description: "high effort" },
+      ],
+      inputModalities: ["text", "image"],
+      supportsPersonality: false,
+      additionalSpeedTiers: [],
+      serviceTiers: [],
+      defaultServiceTier: null,
+    },
+    "injected models must satisfy the complete ChatGPT build 5551 model descriptor contract",
+  );
   assert.equal(harness.nativeRequests[0].params.includeHidden, true);
 }
 

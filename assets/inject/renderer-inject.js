@@ -170,10 +170,18 @@
       description: model.description,
       hidden: false,
       isDefault: false,
+      upgrade: null,
+      upgradeInfo: null,
+      availabilityNux: null,
       defaultReasoningEffort: model.supportedReasoningEfforts.indexOf("medium") >= 0 ? "medium" : (model.supportedReasoningEfforts[0] || "medium"),
       supportedReasoningEfforts: model.supportedReasoningEfforts.map(function (effort) {
         return { reasoningEffort: effort, description: effort + " effort" };
       }),
+      inputModalities: ["text", "image"],
+      supportsPersonality: false,
+      additionalSpeedTiers: [],
+      serviceTiers: [],
+      defaultServiceTier: null,
     };
   }
 
