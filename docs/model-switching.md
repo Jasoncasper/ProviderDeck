@@ -24,6 +24,8 @@ compaction 失败或超时会阻止用户 turn 发出，并恢复切换前的 pr
 
 验证要求 threadId、model 和 modelProvider 同时匹配。运行中的任务只记录最后一次 pending selection；当前 turn 使用原 provider，完成或 interrupt 进入 idle 后再切换。
 
+ProviderDeck 自己发起的 `thread/read`、`thread/unsubscribe`、`thread/resume` 与 `thread/compact/start` 通过已有 native IPC 独立关联响应，不进入 ChatGPT renderer RequestClient。这样被拦截的 `turn/start` 不会与内部切换请求竞争同一个并发调度槽；模型列表、历史列表和普通 ChatGPT 请求仍使用官方 RequestClient。
+
 官方模型固定使用 `modelProvider: "openai"`。代理模型的 selection 形如 `providerdeck:<provider-id>:<model>`，真实模型名可以继续包含冒号。
 
 官方 `gpt-5.3-codex-spark` 当前不接受 `reasoning.summary`，因此其 `turn/start.summary` 会被覆盖为 `none`，由 Codex 在构造 `/responses` 请求时省略该参数；其他模型保留原 summary 设置。

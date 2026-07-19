@@ -11,6 +11,7 @@
   var officialModels = new Set();
   var modelListRequestIds = new Set();
   var requestMetadata = new Map();
+  var internalRequests = new Map();
   var pendingThreadStarts = new Map();
   var threadBindings = new Map();
   var threadStatuses = new Map();
@@ -18,6 +19,7 @@
   var pendingBindings = new Map();
   var compactionWaiters = new Map();
   var hostId = "local";
+  var internalSequence = 0;
 
   function loadCatalog() {
     if (catalogPromise) return catalogPromise;
@@ -207,11 +209,20 @@
   }
 
   function sendInternal(method, params) {
-    var sendCliRequest = window.__providerDeckSendCliRequest;
-    if (typeof sendCliRequest !== "function") {
-      return Promise.reject(new Error("Codex AppServer request bridge is unavailable"));
-    }
-    return Promise.resolve(sendCliRequest({ hostId: hostId, method: method, params: params || {} }));
+    return new Promise(function (resolve, reject) {
+      var id = "providerdeck-internal-" + (++internalSequence);
+      internalRequests.set(id, { resolve: resolve, reject: reject });
+      try {
+        forwardDetail({
+          type: "mcp-request",
+          hostId: hostId,
+          request: { id: id, method: method, params: params || {} },
+        });
+      } catch (error) {
+        internalRequests.delete(id);
+        reject(error);
+      }
+    });
   }
 
   function forwardDetail(detail) {
@@ -597,6 +608,15 @@
     var envelope = responseEnvelope(event && event.data);
     if (envelope) {
       var id = String(envelope.id);
+      var internal = internalRequests.get(id);
+      if (internal) {
+        internalRequests.delete(id);
+        if (event && typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+        if (envelope.error) internal.reject(new Error(envelope.error.message || "app-server request failed"));
+        else internal.resolve(envelope.result);
+        return;
+      }
       var metadata = requestMetadata.get(id);
       var pendingStart = pendingThreadStarts.get(id);
       if (pendingStart) pendingThreadStarts.delete(id);

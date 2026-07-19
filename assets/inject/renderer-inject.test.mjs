@@ -83,10 +83,6 @@ async function createHarness(rpcHandler = async (method, params) => {
   const sendNative = (detail) => {
     const request = structuredClone(detail.request);
     nativeRequests.push(request);
-    if (options.orphanProviderDeckResponses && String(request.id).startsWith("providerdeck-")) {
-      void Promise.resolve().then(() => rpcHandler(request.method, request.params ?? {}));
-      return Promise.resolve();
-    }
     Promise.resolve()
       .then(() => rpcHandler(request.method, request.params ?? {}))
       .then((result) => emitMessage({ type: "mcp-response", message: { id: request.id, result } }))
@@ -133,6 +129,7 @@ async function createHarness(rpcHandler = async (method, params) => {
   sandbox.__providerDeckSendCliRequest = async (payload) => {
     const call = structuredClone(payload);
     appCommandCalls.push(call);
+    if (options.rendererSchedulerError) throw new Error(options.rendererSchedulerError);
     nativeRequests.push({
       id: `app-command-${appCommandCalls.length}`,
       method: call.method,
@@ -172,6 +169,25 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
+  const harness = await createHarness(undefined, true, [], catalog, {
+    rendererSchedulerError: "renderer scheduler re-entry is blocked",
+  });
+  requestEvent(harness, 30, "turn/start", {
+    threadId: "thread-build-5551",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "continue history" }],
+  });
+  await drain();
+
+  assert.deepEqual(
+    harness.nativeRequests.map((request) => request.method),
+    ["thread/read", "thread/unsubscribe", "thread/resume", "turn/start"],
+    "private coordination must bypass ChatGPT's renderer request scheduler",
+  );
+  assert.equal(harness.appCommandCalls.length, 0);
+}
+
+{
   const harness = await createHarness();
   requestEvent(harness, 1, "model/list", { includeHidden: false });
   await drain();
@@ -184,9 +200,7 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
-  const harness = await createHarness(undefined, true, [], catalog, {
-    orphanProviderDeckResponses: true,
-  });
+  const harness = await createHarness();
   requestEvent(harness, 31, "turn/start", {
     threadId: "thread-not-yet-tracked",
     model: "providerdeck:team_proxy:vendor:model:v2",
@@ -195,11 +209,7 @@ async function establishBinding(harness, model, modelProvider) {
   await drain();
   const methods = harness.nativeRequests.map((request) => request.method);
   assert.deepEqual(methods, ["thread/read", "thread/unsubscribe", "thread/resume", "turn/start"]);
-  assert.deepEqual(
-    harness.appCommandCalls.map((call) => call.method),
-    ["thread/read", "thread/unsubscribe", "thread/resume"],
-    "internal RPC must use Codex's registered request client",
-  );
+  assert.equal(harness.appCommandCalls.length, 0);
   assert.equal(harness.nativeRequests[0].params.includeTurns, true);
 }
 
@@ -209,7 +219,7 @@ async function establishBinding(harness, model, modelProvider) {
       throw new Error("thread thread-new is not materialized yet; includeTurns is unavailable before first user message");
     }
     return { turn: { id: "turn-first", status: "inProgress" } };
-  }, true, [], catalog, { orphanProviderDeckResponses: true });
+  });
   requestEvent(harness, 38, "turn/start", {
     threadId: "thread-new",
     model: "providerdeck:team_proxy:vendor:model:v2",
@@ -221,7 +231,7 @@ async function establishBinding(harness, model, modelProvider) {
     ["thread/read", "turn/start"],
     "an unmaterialized thread must receive its first turn without resume",
   );
-  assert.deepEqual(harness.appCommandCalls.map((call) => call.method), ["thread/read"]);
+  assert.equal(harness.appCommandCalls.length, 0);
 }
 
 {
@@ -230,7 +240,7 @@ async function establishBinding(harness, model, modelProvider) {
       throw new Error("ephemeral threads do not support includeTurns");
     }
     return { turn: { id: "turn-ephemeral", status: "inProgress" } };
-  }, true, [], catalog, { orphanProviderDeckResponses: true });
+  });
   requestEvent(harness, 138, "turn/start", {
     threadId: "thread-ephemeral",
     model: "gpt-5.6-terra",
@@ -242,7 +252,7 @@ async function establishBinding(harness, model, modelProvider) {
     ["thread/read", "turn/start"],
     "an ephemeral side task must receive its first turn without history inspection",
   );
-  assert.deepEqual(harness.appCommandCalls.map((call) => call.method), ["thread/read"]);
+  assert.equal(harness.appCommandCalls.length, 0);
   assert.equal(harness.nativeRequests.at(-1).params.model, "gpt-5.6-terra");
   assert.equal(harness.nativeRequests.at(-1).params.modelProvider, "openai");
 }
@@ -813,7 +823,7 @@ async function establishBinding(harness, model, modelProvider) {
   await drain();
 
   assert.deepEqual(
-    harness.appCommandCalls.map((call) => call.method),
+    harness.nativeRequests.filter((request) => String(request.id).startsWith("providerdeck-internal-")).map((request) => request.method),
     ["thread/compact/start"],
     "proxy history must compact before rebinding to the official provider",
   );
@@ -836,7 +846,7 @@ async function establishBinding(harness, model, modelProvider) {
   await drain();
 
   assert.deepEqual(
-    harness.appCommandCalls.map((call) => call.method),
+    harness.nativeRequests.filter((request) => String(request.id).startsWith("providerdeck-internal-")).map((request) => request.method),
     ["thread/compact/start", "thread/unsubscribe", "thread/resume"],
   );
   assert.equal(harness.nativeRequests.at(-1).id, 71);
@@ -859,12 +869,13 @@ async function establishBinding(harness, model, modelProvider) {
   });
   await drain();
 
+  const internalRequests = harness.nativeRequests.filter((request) => String(request.id).startsWith("providerdeck-internal-"));
   assert.deepEqual(
-    harness.appCommandCalls.map((call) => call.method),
+    internalRequests.map((request) => request.method),
     ["thread/unsubscribe", "thread/resume", "thread/compact/start"],
     "an already-official thread must temporarily restore the proxy that produced unsafe history",
   );
-  const proxyResume = harness.appCommandCalls[1];
+  const proxyResume = internalRequests[1];
   assert.equal(proxyResume.params.model, "vendor:model:v2");
   assert.equal(proxyResume.params.modelProvider, "providerdeck-team_proxy");
 

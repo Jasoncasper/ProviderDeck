@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.17 (2026-07-19)
+
+### 修复
+
+- 兼容 ChatGPT 26.715.31925 (build 5551) 的 renderer 请求优先级与并发调度：ProviderDeck 内部切换请求改为直发 native IPC 并独立关联响应，避免被拦截的 `turn/start` 重入同一 scheduler 后形成队列饥饿，连带阻塞历史对话与模型选择器。
+
 ## v1.0.12 (2026-07-15)
 
 ### 修复
