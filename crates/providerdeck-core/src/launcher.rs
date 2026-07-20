@@ -1129,17 +1129,21 @@ fn ensure_loopback_no_proxy(env: &mut HashMap<String, String>) {
 
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let mut last_error = None;
+    let mut installed = false;
     for _ in 0..20 {
-        match try_install_bridge(debug_port, helper_port).await {
-            Ok(_) if renderer_bridge_health_ok(debug_port).await.unwrap_or(false) => return Ok(()),
-            Ok(_) => {
-                last_error = Some(anyhow::anyhow!(
-                    "renderer transport or ProviderDeck bridge is not ready"
-                ))
+        if !installed {
+            match try_install_bridge(debug_port, helper_port).await {
+                Ok(_) => installed = true,
+                Err(error) => last_error = Some(error),
             }
-            Err(error) => {
-                last_error = Some(error);
-            }
+        }
+        if installed && renderer_bridge_health_ok(debug_port).await.unwrap_or(false) {
+            return Ok(());
+        }
+        if installed {
+            last_error = Some(anyhow::anyhow!(
+                "renderer transport or ProviderDeck bridge is not ready"
+            ));
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }

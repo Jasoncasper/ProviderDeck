@@ -17,6 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 pub const BRIDGE_BINDING_NAME: &str = "providerDeckBridgeV1";
 const RENDERER_BRIDGE_EVENT: &str = "codex-message-from-view";
 const RENDERER_BRIDGE_HOOK: &str = "__providerDeckInterceptPostMessage";
+const RENDERER_INCOMING_HOOK: &str = "__providerDeckInterceptIncomingMessage";
 const RENDERER_BRIDGE_PATCH_LOADED: &str = "__providerDeckTransportPatchLoaded";
 const APP_SERVER_HANDLER_ERROR: &str = "Missing AppServer request message handler";
 const SEND_CLI_REQUEST_COMMAND: &str = "send-cli-request-for-host";
@@ -38,6 +39,9 @@ pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<Strin
         && source.contains(APP_SERVER_HANDLER_ERROR);
     let bridge = Regex::new(
         r"postMessage:([A-Za-z_$][A-Za-z0-9_$]*)=>\{let ([A-Za-z_$][A-Za-z0-9_$]*)=!1,([A-Za-z_$][A-Za-z0-9_$]*)=window\.electronBridge;",
+    )?;
+    let incoming = Regex::new(
+        r"handleMessage\(([A-Za-z_$][A-Za-z0-9_$]*)\)\{let ([A-Za-z_$][A-Za-z0-9_$]*)=([A-Za-z_$][A-Za-z0-9_$]*)\(([A-Za-z_$][A-Za-z0-9_$]*)\);([A-Za-z_$][A-Za-z0-9_$]*)!=null&&this\.deliverMessage\(([A-Za-z_$][A-Za-z0-9_$]*)\.type,([A-Za-z_$][A-Za-z0-9_$]*)\)",
     )?;
     if patch_transport {
         let matches = bridge.find_iter(source).count();
@@ -92,8 +96,37 @@ pub fn patch_renderer_bridge_source(source: &str) -> anyhow::Result<Option<Strin
         "postMessage:${{1}}=>{{if(window.{RENDERER_BRIDGE_HOOK}?.(${{1}})===true)return;let ${{2}}=!1,${{3}}=window.electronBridge;"
     );
     let patched = bridge.replace(&patched, replacement);
+    let incoming_matches = incoming
+        .captures_iter(&patched)
+        .filter(|captures| {
+            captures[1] == captures[4]
+                && captures[2] == captures[5]
+                && captures[2] == captures[6]
+                && captures[2] == captures[7]
+        })
+        .collect::<Vec<_>>();
+    if incoming_matches.len() != 1 {
+        bail!(
+            "expected one Codex renderer incoming message dispatcher, found {}",
+            incoming_matches.len()
+        );
+    }
+    let captures = &incoming_matches[0];
+    let incoming_match = captures
+        .get(0)
+        .context("Codex renderer incoming dispatcher match is missing")?;
+    let incoming_range = incoming_match.start()..incoming_match.end();
+    let event = captures[1].to_string();
+    let message = captures[2].to_string();
+    let parser = captures[3].to_string();
+    let incoming_replacement = format!(
+        "handleMessage({event}){{let {message}={parser}({event});{message}=window.{RENDERER_INCOMING_HOOK}?.({message})??{message};{message}!=null&&this.deliverMessage({message}.type,{message})"
+    );
+    drop(incoming_matches);
+    let mut patched = patched.into_owned();
+    patched.replace_range(incoming_range, &incoming_replacement);
     Ok(Some(format!(
-        "window.{RENDERER_BRIDGE_PATCH_LOADED}=true;window.__providerDeckPendingPostMessages=window.__providerDeckPendingPostMessages||[];window.{RENDERER_BRIDGE_HOOK}=window.{RENDERER_BRIDGE_HOOK}||function(detail){{if(![`model/list`,`thread/list`,`config/value/write`,`config/batchWrite`,`thread/start`,`turn/start`].includes(detail?.request?.method))return false;window.__providerDeckPendingPostMessages.push(detail);return true}};{patched}"
+        "window.{RENDERER_BRIDGE_PATCH_LOADED}=true;window.__providerDeckPendingPostMessages=window.__providerDeckPendingPostMessages||[];window.{RENDERER_INCOMING_HOOK}=window.{RENDERER_INCOMING_HOOK}||function(message){{return message}};window.{RENDERER_BRIDGE_HOOK}=window.{RENDERER_BRIDGE_HOOK}||function(detail){{if(![`model/list`,`config/value/write`,`config/batchWrite`,`thread/start`,`turn/start`].includes(detail?.request?.method))return false;window.__providerDeckPendingPostMessages.push(detail);return true}};{patched}"
     )))
 }
 

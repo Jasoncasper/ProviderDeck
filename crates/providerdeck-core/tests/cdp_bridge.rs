@@ -70,7 +70,7 @@ fn injection_script_uses_narrow_app_server_coordination() {
 
 #[test]
 fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
-    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}var _E=1;sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
+    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}var _E=1;sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}};class M{handleMessage(e){let t=Mk(e);t!=null&&this.deliverMessage(t.type,t)}}"#;
 
     let patched = bridge::patch_renderer_bridge_source(source)
         .expect("current Codex renderer bridge should be recognized")
@@ -89,11 +89,13 @@ fn renderer_bridge_patch_intercepts_before_electron_ipc_send() {
     assert!(patched.contains("gE(`send-cli-request-for-host`,payload)"));
     assert!(patched.contains("Unsupported ProviderDeck AppServer request`));var _E=1"));
     assert!(patched.contains("return true"));
+    assert!(patched.contains("t=window.__providerDeckInterceptIncomingMessage?.(t)??t"));
+    assert!(patched.contains("window.__providerDeckInterceptIncomingMessage=window.__providerDeckInterceptIncomingMessage||function(message){return message}"));
 }
 
 #[test]
 fn renderer_bridge_patch_supports_split_transport_and_gateway_chunks() {
-    let transport_source = r#"Dk={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}}"#;
+    let transport_source = r#"Dk={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){let r=e;n.sendMessageFromView(r).catch(()=>{}),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});t&&(r.__codexForwardedViaBridge=!0),window.dispatchEvent(r)}};class M{handleMessage(e){let t=Mk(e);t!=null&&this.deliverMessage(t.type,t)}}"#;
     let gateway_source = r#"class BE{messageHandler=null;sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}VE=new BE;function UE(e,t){return VE.sendRequest(e,t)}"#;
 
     let patched_transport = bridge::patch_renderer_bridge_source(transport_source)
@@ -112,15 +114,16 @@ fn renderer_bridge_patch_supports_split_transport_and_gateway_chunks() {
 
 #[test]
 fn renderer_bridge_bootstrap_does_not_buffer_unrelated_app_server_requests() {
-    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}}"#;
+    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}};class M{handleMessage(e){let t=Mk(e);t!=null&&this.deliverMessage(t.type,t)}}"#;
 
     let patched = bridge::patch_renderer_bridge_source(source)
         .expect("current Codex renderer bridge should be recognized")
         .expect("renderer bridge should require a patch");
 
     assert!(patched.contains(
-        "if(![`model/list`,`thread/list`,`config/value/write`,`config/batchWrite`,`thread/start`,`turn/start`].includes(detail?.request?.method))return false"
+        "if(![`model/list`,`config/value/write`,`config/batchWrite`,`thread/start`,`turn/start`].includes(detail?.request?.method))return false"
     ));
+    assert!(!patched.contains("`thread/list`"));
 }
 
 #[test]
@@ -172,7 +175,7 @@ fn renderer_prearm_auto_attach_waits_for_page_before_first_execution() {
 
 #[tokio::test]
 async fn prearm_renderer_bridge_interceptor_enables_fetch_before_resuming_without_reload() {
-    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}}"#;
+    let source = r#"class C{sendRequest=async(e,t)=>{if(this.messageHandler==null)throw Error(`Missing AppServer request message handler`);return this.messageHandler(e,t)}}let h=new C;function gE(e,t){return h.sendRequest(e,t)}sp={postMessage:e=>{let t=!1,n=window.electronBridge;if(n?.sendMessageFromView){n.sendMessageFromView(e),t=!0}let r=new CustomEvent(`codex-message-from-view`,{detail:e});window.dispatchEvent(r)}};class M{handleMessage(e){let t=Mk(e);t!=null&&this.deliverMessage(t.type,t)}}"#;
     let (url, request_rx) = spawn_cdp_server(move |mut socket| async move {
         let auto_attach = recv_json(&mut socket).await;
         assert_eq!(auto_attach["method"], "Target.setAutoAttach");

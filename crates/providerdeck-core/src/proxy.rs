@@ -96,30 +96,73 @@ pub async fn network_safety_for_proxy(proxy: Option<&str>) -> Value {
     }
 
     let endpoint_label = endpoint.label();
-    let reachable = tokio::time::timeout(
-        Duration::from_millis(350),
-        tokio::net::TcpStream::connect((endpoint.host.as_str(), endpoint.port)),
-    )
-    .await
-    .is_ok_and(|result| result.is_ok());
-    if reachable {
+    if is_plain_http_proxy(proxy) {
+        if http_proxy_upstream_available(proxy).await {
+            return json!({
+                "status": "ok",
+                "proxyConfigured": true,
+                "checked": true,
+                "endpoint": endpoint_label,
+            });
+        }
         return json!({
-            "status": "ok",
+            "status": "unavailable",
             "proxyConfigured": true,
             "checked": true,
             "endpoint": endpoint_label,
+            "message": format!(
+                "Codex 使用的本地代理 {endpoint_label} 无法建立 ChatGPT 上游连接，请检查代理节点后重试"
+            ),
         });
     }
 
+    let connection = tokio::time::timeout(
+        Duration::from_millis(350),
+        tokio::net::TcpStream::connect((endpoint.host.as_str(), endpoint.port)),
+    )
+    .await;
+    let Ok(Ok(stream)) = connection else {
+        return json!({
+            "status": "unavailable",
+            "proxyConfigured": true,
+            "checked": true,
+            "endpoint": endpoint_label,
+            "message": format!(
+                "Codex 使用的本地代理 {endpoint_label} 当前不可达，请先恢复代理连接后重试；如果代理端口已切换，请重启 Codex 以刷新配置"
+            ),
+        });
+    };
+    drop(stream);
+
     json!({
-        "status": "unavailable",
+        "status": "ok",
         "proxyConfigured": true,
         "checked": true,
         "endpoint": endpoint_label,
-        "message": format!(
-            "Codex 使用的本地代理 {endpoint_label} 当前不可达，请先恢复代理连接后重试；如果代理端口已切换，请重启 Codex 以刷新配置"
-        ),
     })
+}
+
+fn is_plain_http_proxy(proxy: &str) -> bool {
+    proxy
+        .split_once("://")
+        .map(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
+        .unwrap_or(true)
+}
+
+async fn http_proxy_upstream_available(proxy: &str) -> bool {
+    let Ok(proxy) = reqwest::Proxy::all(proxy) else {
+        return false;
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .proxy(proxy)
+        .connect_timeout(Duration::from_millis(1500))
+        .timeout(Duration::from_secs(2))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return false;
+    };
+    client.head("https://chatgpt.com").send().await.is_ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

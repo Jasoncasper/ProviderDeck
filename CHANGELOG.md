@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.0 (2026-07-20)
+
+### 修复
+
+- `model/list` 保留 ChatGPT 原始 request ID 与 native pending lifecycle，并在 ChatGPT 分发真实响应前合并代理模型，避免模型目录 Promise 悬空后同时阻塞模型选择器与历史任务恢复。
+- 不再改写 `thread/list.modelProviders`，历史列表、归档状态与 host/provider lifecycle 完全交由 ChatGPT 原生逻辑管理。
+- 移除对全局 `window.dispatchEvent` 的覆盖和全局 `message` capture listener，改为只挂接 AppServer transport 的入站/出站窄钩子，避免干扰新版 ChatGPT 的任务恢复状态。
+- bridge 首次安装成功后只轮询 readiness，不再重复创建 CDP session，避免一次启动中多个 session 同时处理同一 binding 回调。
+- ProviderDeck 内部 IPC 请求在 native 拒绝或 15 秒无响应时直接结束原始用户请求，避免侧栏任务长期停在“创建任务超时”。
+- 本地 HTTP 代理健康检查改为通过该代理实际连接 `https://chatgpt.com`，避免仅端口存活但上游不可用时启动后拖慢历史对话并阻塞消息发送。
+
 ## v1.0.18 (2026-07-19)
 
 ### 修复

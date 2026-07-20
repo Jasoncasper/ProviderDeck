@@ -88,13 +88,27 @@ async function createHarness(rpcHandler = async (method, params) => {
     emittedMessages.push(data);
     for (const listener of listeners.get("message") ?? []) listener({ type: "message", data });
   };
+  const deliverIncoming = (message) => {
+    const intercepted = typeof sandbox.__providerDeckInterceptIncomingMessage === "function"
+      ? sandbox.__providerDeckInterceptIncomingMessage(message)
+      : message;
+    if (intercepted != null) emitMessage(intercepted);
+  };
   const sendNative = (detail) => {
     const request = structuredClone(detail.request);
     nativeRequests.push(request);
+    if (options.nativeSendError) return Promise.reject(new Error(options.nativeSendError));
+    if (options.dropNativeResponses) return Promise.resolve();
     Promise.resolve()
       .then(() => rpcHandler(request.method, request.params ?? {}))
-      .then((result) => emitMessage({ type: "mcp-response", message: { id: request.id, result } }))
-      .catch((error) => emitMessage({ type: "mcp-response", message: { id: request.id, error: { message: error.message } } }));
+      .then((result) => {
+        const message = { type: "mcp-response", message: { id: request.id, result } };
+        deliverIncoming(message);
+      })
+      .catch((error) => {
+        const message = { type: "mcp-response", message: { id: request.id, error: { message: error.message } } };
+        deliverIncoming(message);
+      });
     return Promise.resolve();
   };
   const originalDispatch = (event) => {
@@ -115,7 +129,12 @@ async function createHarness(rpcHandler = async (method, params) => {
     window: null,
     document: { body: null, head: null, documentElement: null },
     localStorage: { getItem: () => null, setItem() {} },
-    setTimeout,
+    setTimeout(callback, delay, ...args) {
+      const effectiveDelay = options.maxTimerDelayMs == null
+        ? delay
+        : Math.min(delay, options.maxTimerDelayMs);
+      return setTimeout(callback, effectiveDelay, ...args);
+    },
     clearTimeout,
     setInterval() {},
     requestAnimationFrame: (callback) => callback(),
@@ -162,13 +181,14 @@ async function createHarness(rpcHandler = async (method, params) => {
   };
   vm.runInNewContext(script, sandbox, { filename: "renderer-inject.js" });
   await drain();
-  return { sandbox, nativeRequests, appCommandCalls, bridgeCalls, emittedMessages, fetchCalls, emitMessage };
+  return { sandbox, nativeRequests, appCommandCalls, bridgeCalls, emittedMessages, fetchCalls, emitMessage: deliverIncoming, originalDispatch, sendNative, listeners };
 }
 
 function requestEvent(harness, id, method, params) {
-  harness.sandbox.dispatchEvent(new harness.sandbox.CustomEvent("codex-message-from-view", {
-    detail: { type: "mcp-request", hostId: "local", request: { id, method, params } },
-  }));
+  const detail = { type: "mcp-request", hostId: "local", request: { id, method, params } };
+  if (harness.sandbox.__providerDeckInterceptPostMessage(detail) !== true) {
+    void harness.sendNative(detail);
+  }
 }
 
 async function establishBinding(harness, model, modelProvider) {
@@ -196,7 +216,55 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
+  const harness = await createHarness(undefined, true, [], catalog, {
+    nativeSendError: "native IPC send failed",
+  });
+  requestEvent(harness, 130, "turn/start", {
+    threadId: "thread-native-send-failure",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "must not hang" }],
+  });
+  await drain();
+
+  const response = harness.emittedMessages.find((message) => message.message?.id === 130);
+  assert.ok(response, "a native IPC rejection must settle the intercepted user turn");
+  assert.match(response.message.error.message, /native IPC send failed/);
+  assert.equal(
+    harness.emittedMessages.some((message) => String(message.message?.id).startsWith("providerdeck-internal-")),
+    false,
+    "internal request failures must not leak into ChatGPT's request lifecycle",
+  );
+}
+
+{
+  const harness = await createHarness(undefined, true, [], catalog, {
+    dropNativeResponses: true,
+    maxTimerDelayMs: 5,
+  });
+  requestEvent(harness, 131, "turn/start", {
+    threadId: "thread-native-timeout",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "must time out" }],
+  });
+  await drain();
+
+  const response = harness.emittedMessages.find((message) => message.message?.id === 131);
+  assert.ok(response, "an unanswered internal request must settle the intercepted user turn");
+  assert.match(response.message.error.message, /thread\/read.*timed out/i);
+}
+
+{
   const harness = await createHarness();
+  assert.equal(
+    harness.sandbox.dispatchEvent,
+    harness.originalDispatch,
+    "ProviderDeck must not replace the page-wide dispatchEvent implementation",
+  );
+  assert.equal(
+    (harness.listeners.get("message") ?? []).length,
+    0,
+    "ProviderDeck must process AppServer messages through the transport hook instead of a global listener",
+  );
   requestEvent(harness, 1, "model/list", { includeHidden: false });
   await drain();
   const response = harness.emittedMessages.find((message) => message.message?.id === 1);
@@ -231,6 +299,11 @@ async function establishBinding(harness, model, modelProvider) {
       defaultServiceTier: null,
     },
     "injected models must satisfy the complete ChatGPT build 5551 model descriptor contract",
+  );
+  assert.equal(
+    harness.nativeRequests[0].id,
+    1,
+    "model discovery must preserve ChatGPT's original pending request lifecycle",
   );
   assert.equal(harness.nativeRequests[0].params.includeHidden, true);
 }
@@ -334,11 +407,15 @@ async function establishBinding(harness, model, modelProvider) {
 {
   const historyPayload = { data: [{ id: "thread-1", messages: [{ model: "historical-model" }] }] };
   const harness = await createHarness(async (method) => method === "thread/list" ? structuredClone(historyPayload) : {});
-  requestEvent(harness, 2, "thread/list", { modelProviders: ["providerdeck-team_proxy"] });
+  requestEvent(harness, 2, "thread/list", { modelProviders: ["openai"] });
   await drain();
   const response = harness.emittedMessages.find((message) => message.message?.id === 2);
   assert.deepEqual(response.message.result, historyPayload, "history payloads must remain byte-shape equivalent");
-  assert.deepEqual(harness.nativeRequests[0].params.modelProviders, [], "history must include every provider");
+  assert.deepEqual(
+    harness.nativeRequests[0].params.modelProviders,
+    ["openai"],
+    "history filters must stay under ChatGPT's native host/provider lifecycle",
+  );
 }
 
 {
@@ -831,8 +908,9 @@ async function establishBinding(harness, model, modelProvider) {
   };
   const harness = await createHarness(undefined, true, [queuedModelList]);
   await drain();
-  const request = harness.nativeRequests.find((item) => item.id === 63);
-  assert.ok(request, "pre-bridge model/list must be released after renderer injection is ready");
+  const request = harness.nativeRequests.find((item) => item.method === "model/list");
+  assert.ok(request, "pre-bridge model/list must be completed after renderer injection is ready");
+  assert.equal(request.id, 63, "queued model discovery must preserve the renderer request ID");
   assert.equal(request.params.includeHidden, true);
   const response = harness.emittedMessages.find((message) => message.message?.id === 63);
   assert.deepEqual(

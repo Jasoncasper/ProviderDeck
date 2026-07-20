@@ -20,6 +20,7 @@
   var compactionWaiters = new Map();
   var hostId = "local";
   var internalSequence = 0;
+  var internalRequestTimeoutMs = 15000;
 
   function loadCatalog() {
     if (catalogPromise) return catalogPromise;
@@ -219,7 +220,11 @@
   function sendInternal(method, params) {
     return new Promise(function (resolve, reject) {
       var id = "providerdeck-internal-" + (++internalSequence);
-      internalRequests.set(id, { resolve: resolve, reject: reject });
+      var timeout = setTimeout(function () {
+        if (!internalRequests.delete(id)) return;
+        reject(new Error("ProviderDeck internal " + method + " timed out after " + internalRequestTimeoutMs + "ms"));
+      }, internalRequestTimeoutMs);
+      internalRequests.set(id, { resolve: resolve, reject: reject, timeout: timeout });
       try {
         forwardDetail({
           type: "mcp-request",
@@ -228,9 +233,20 @@
         });
       } catch (error) {
         internalRequests.delete(id);
+        clearTimeout(timeout);
         reject(error);
       }
     });
+  }
+
+  function rejectInternalRequest(request, error) {
+    var id = String(request && request.id);
+    var internal = internalRequests.get(id);
+    if (!internal) return false;
+    internalRequests.delete(id);
+    clearTimeout(internal.timeout);
+    internal.reject(error);
+    return true;
   }
 
   function forwardDetail(detail) {
@@ -238,7 +254,7 @@
     if (electronBridge && typeof electronBridge.sendMessageFromView === "function") {
       Promise.resolve(electronBridge.sendMessageFromView(detail)).catch(function (error) {
         var request = detail && detail.request;
-        if (request) emitRequestError(request, error);
+        if (request && !rejectInternalRequest(request, error)) emitRequestError(request, error);
       });
       return true;
     }
@@ -612,18 +628,17 @@
     }
   }
 
-  function onMessage(event) {
-    var envelope = responseEnvelope(event && event.data);
+  function interceptIncomingMessage(message) {
+    var envelope = responseEnvelope(message);
     if (envelope) {
       var id = String(envelope.id);
       var internal = internalRequests.get(id);
       if (internal) {
         internalRequests.delete(id);
-        if (event && typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
-        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+        clearTimeout(internal.timeout);
         if (envelope.error) internal.reject(new Error(envelope.error.message || "app-server request failed"));
         else internal.resolve(envelope.result);
-        return;
+        return null;
       }
       var metadata = requestMetadata.get(id);
       var pendingStart = pendingThreadStarts.get(id);
@@ -637,10 +652,10 @@
         trackResponse(metadata, envelope.result);
       }
       if (pendingStart) pendingStart.resolve();
-      return;
+      return message;
     }
-    var notification = notificationEnvelope(event && event.data);
-    if (!notification) return;
+    var notification = notificationEnvelope(message);
+    if (!notification) return message;
     var params = notification.params || {};
     if (notification.method === "item/completed" && params.threadId) {
       var completedItem = params.item;
@@ -669,6 +684,7 @@
       }
       void flushPending(params.threadId);
     }
+    return message;
   }
 
   function interceptRequest(event) {
@@ -678,12 +694,9 @@
     hostId = detail.hostId || hostId;
     requestMetadata.set(String(request.id), { method: request.method, params: request.params || {} });
     if (request.method === "model/list") {
+      void loadCatalog();
       request.params = Object.assign({}, request.params || {}, { includeHidden: true });
       modelListRequestIds.add(String(request.id));
-      return passThrough(event);
-    }
-    if (request.method === "thread/list") {
-      request.params = Object.assign({}, request.params || {}, { modelProviders: [] });
       return passThrough(event);
     }
     if (request.method === "config/value/write") {
@@ -719,12 +732,7 @@
     if (window.__providerDeckInterceptPostMessage(detail) !== true) forwardDetail(detail);
   });
 
-  window.addEventListener("message", onMessage, true);
-  window.dispatchEvent = function providerDeckDispatch(event) {
-    if (!event || event.type !== "codex-message-from-view") return originalDispatch(event);
-    if (event.__codexForwardedViaBridge) return originalDispatch(event);
-    return interceptRequest(event);
-  };
+  window.__providerDeckInterceptIncomingMessage = interceptIncomingMessage;
 
   void loadCatalog();
 })();
