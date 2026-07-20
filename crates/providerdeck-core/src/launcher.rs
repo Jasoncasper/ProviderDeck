@@ -124,6 +124,9 @@ pub trait LaunchHooks: Send + Sync {
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
+    async fn wait_for_network_ready(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()>;
     async fn repair_codex_config(&self, _helper_port: u16) -> anyhow::Result<()> {
         Ok(())
@@ -213,6 +216,7 @@ where
 
     let result: anyhow::Result<LaunchHandle> = async {
         if settings.enhancements_enabled {
+            hooks.wait_for_network_ready().await?;
             hooks.start_helper(helper_port).await?;
             helper_started = true;
             hooks.repair_codex_config(helper_port).await?;
@@ -365,6 +369,11 @@ impl LaunchHooks for DefaultLaunchHooks {
             task,
         });
         Ok(())
+    }
+
+    async fn wait_for_network_ready(&self) -> anyhow::Result<()> {
+        let _ = codex_process_environment();
+        crate::proxy::wait_for_codex_network_ready().await
     }
 
     async fn repair_codex_config(&self, helper_port: u16) -> anyhow::Result<()> {

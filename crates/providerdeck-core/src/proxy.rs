@@ -72,6 +72,27 @@ pub async fn codex_network_safety() -> Value {
     result
 }
 
+pub async fn wait_for_codex_network_ready() -> anyhow::Result<()> {
+    let mut last_message = None;
+    for attempt in 0..5 {
+        let result = codex_network_safety().await;
+        if result.get("status").and_then(Value::as_str) != Some("unavailable") {
+            return Ok(());
+        }
+        last_message = result
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if attempt < 4 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    anyhow::bail!(
+        "{}",
+        last_message.unwrap_or_else(|| "Codex 网络代理当前不可用，请恢复 VPN 后重试".to_string())
+    )
+}
+
 pub async fn network_safety_for_proxy(proxy: Option<&str>) -> Value {
     let Some(proxy) = proxy else {
         return json!({

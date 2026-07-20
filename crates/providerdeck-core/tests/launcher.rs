@@ -678,6 +678,46 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
 }
 
 #[tokio::test]
+async fn launch_lifecycle_stops_before_starting_chatgpt_when_network_is_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let status_store = StatusStore::new(temp.path().join("latest-status.json"));
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = FakeHooks::new(events.clone())
+        .with_network_error("Codex 使用的本地代理 127.0.0.1:7890 无法建立 ChatGPT 上游连接");
+
+    let error = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57421,
+            status_store: status_store.clone(),
+        },
+        &hooks,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("无法建立 ChatGPT 上游连接"));
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            "select-debug:9229",
+            "select-helper:57421",
+            "load-settings",
+            "network-unavailable",
+            "prearm-stop",
+            "status:failed",
+        ]
+    );
+    assert_eq!(
+        status_store.load_latest().unwrap().unwrap().status,
+        "failed"
+    );
+}
+
+#[tokio::test]
 async fn launch_lifecycle_does_not_apply_active_relay_profile_before_starting_codex() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
@@ -906,6 +946,7 @@ struct FakeHooks {
     launch_result: CodexLaunch,
     launch_error: Option<String>,
     inject_error: Option<String>,
+    network_error: Option<String>,
 }
 
 impl FakeHooks {
@@ -920,6 +961,7 @@ impl FakeHooks {
             },
             launch_error: None,
             inject_error: None,
+            network_error: None,
         }
     }
 
@@ -940,6 +982,11 @@ impl FakeHooks {
 
     fn with_launch_error(mut self, message: &str) -> Self {
         self.launch_error = Some(message.to_string());
+        self
+    }
+
+    fn with_network_error(mut self, message: &str) -> Self {
+        self.network_error = Some(message.to_string());
         self
     }
 
@@ -985,6 +1032,14 @@ impl LaunchHooks for FakeHooks {
     async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
         self.event("load-settings");
         Ok(self.settings.clone())
+    }
+
+    async fn wait_for_network_ready(&self) -> anyhow::Result<()> {
+        if let Some(message) = &self.network_error {
+            self.event("network-unavailable");
+            anyhow::bail!(message.clone());
+        }
+        Ok(())
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
