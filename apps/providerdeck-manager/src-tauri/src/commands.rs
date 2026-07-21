@@ -206,11 +206,23 @@ pub fn launch_providerdeck(request: LaunchRequest) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn restart_providerdeck(request: LaunchRequest) -> CommandResult<Value> {
-    providerdeck_core::watcher::stop_launcher_processes();
-    if !providerdeck_core::watcher::stop_codex_processes() {
+pub async fn restart_providerdeck(request: LaunchRequest) -> CommandResult<Value> {
+    let preparation = prepare_providerdeck_restart(
+        || async {
+            let settings = SettingsStore::default().load()?;
+            if settings.enhancements_enabled {
+                let _ = providerdeck_core::launcher::codex_process_environment();
+                providerdeck_core::proxy::wait_for_codex_network_ready().await?;
+            }
+            Ok(())
+        },
+        providerdeck_core::watcher::stop_launcher_processes,
+        providerdeck_core::watcher::stop_codex_processes,
+    )
+    .await;
+    if let Err(error) = preparation {
         return failed(
-            "ChatGPT 尚未完全退出，请稍后重试。",
+            &format!("启动前检查失败：{error}。ChatGPT 已保持当前状态。"),
             json!({
                 "debugPort": request.debug_port,
                 "helperPort": request.helper_port
@@ -218,6 +230,25 @@ pub fn restart_providerdeck(request: LaunchRequest) -> CommandResult<Value> {
         );
     }
     spawn_providerdeck_launch(request, "ChatGPT 已请求重启，启动任务正在后台运行。")
+}
+
+async fn prepare_providerdeck_restart<Preflight, PreflightFuture, StopLauncher, StopCodex>(
+    preflight: Preflight,
+    stop_launcher: StopLauncher,
+    stop_codex: StopCodex,
+) -> anyhow::Result<()>
+where
+    Preflight: FnOnce() -> PreflightFuture,
+    PreflightFuture: std::future::Future<Output = anyhow::Result<()>>,
+    StopLauncher: FnOnce(),
+    StopCodex: FnOnce() -> bool,
+{
+    preflight().await?;
+    stop_launcher();
+    if !stop_codex() {
+        anyhow::bail!("ChatGPT 尚未完全退出，请稍后重试")
+    }
+    Ok(())
 }
 
 fn spawn_providerdeck_launch(
@@ -1299,12 +1330,64 @@ mod tests {
         assert_eq!(value["recoveryRequired"], false);
     }
 
-    #[test]
-    fn restart_stops_when_chatgpt_does_not_exit() {
-        let source = include_str!("commands.rs");
-        let production = source.split("#[cfg(test)]").next().unwrap();
+    #[tokio::test]
+    async fn restart_stops_when_chatgpt_does_not_exit() {
+        let result = prepare_providerdeck_restart(|| async { Ok(()) }, || {}, || false).await;
 
-        assert!(production.contains("if !providerdeck_core::watcher::stop_codex_processes()"));
-        assert!(production.contains("ChatGPT 尚未完全退出"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ChatGPT 尚未完全退出")
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_preflight_failure_keeps_chatgpt_and_launcher_running() {
+        let launcher_stopped = std::sync::atomic::AtomicBool::new(false);
+        let chatgpt_stopped = std::sync::atomic::AtomicBool::new(false);
+
+        let result = prepare_providerdeck_restart(
+            || async { anyhow::bail!("proxy unavailable") },
+            || launcher_stopped.store(true, std::sync::atomic::Ordering::SeqCst),
+            || {
+                chatgpt_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+                true
+            },
+        )
+        .await;
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("proxy unavailable")
+        );
+        assert!(!launcher_stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!chatgpt_stopped.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn restart_stops_launcher_and_chatgpt_after_successful_preflight() {
+        let events = std::sync::Mutex::new(Vec::new());
+
+        prepare_providerdeck_restart(
+            || async {
+                events.lock().unwrap().push("preflight");
+                Ok(())
+            },
+            || events.lock().unwrap().push("stop-launcher"),
+            || {
+                events.lock().unwrap().push("stop-chatgpt");
+                true
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["preflight", "stop-launcher", "stop-chatgpt"]
+        );
     }
 }

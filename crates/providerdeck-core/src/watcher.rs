@@ -224,6 +224,17 @@ pub fn wait_for_process_shutdown_with(
     false
 }
 
+pub fn parse_process_ids(output: &str, current_process_id: u32) -> Vec<u32> {
+    let mut process_ids = output
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .filter(|process_id| *process_id != current_process_id)
+        .collect::<Vec<_>>();
+    process_ids.sort_unstable();
+    process_ids.dedup();
+    process_ids
+}
+
 pub fn filter_killable_launcher_processes<'a>(
     processes: impl IntoIterator<Item = (u32, u32, &'a str)>,
     current_process_id: u32,
@@ -474,7 +485,36 @@ pub fn stop_launcher_processes() {
 }
 
 #[cfg(not(windows))]
-pub fn stop_launcher_processes() {}
+fn find_launcher_processes() -> Vec<u32> {
+    let port = format!("-iTCP:{}", crate::ports::LAUNCHER_GUARD_PORT);
+    let lsof = if cfg!(target_os = "macos") {
+        "/usr/sbin/lsof"
+    } else {
+        "lsof"
+    };
+    std::process::Command::new(lsof)
+        .args(["-nP", "-t", &port, "-sTCP:LISTEN"])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|output| parse_process_ids(&output, std::process::id()))
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+pub fn stop_launcher_processes() {
+    let kill = if cfg!(target_os = "macos") {
+        "/bin/kill"
+    } else {
+        "kill"
+    };
+    for process_id in find_launcher_processes() {
+        let _ = std::process::Command::new(kill)
+            .arg(process_id.to_string())
+            .output();
+    }
+    let _ = wait_for_process_shutdown_with(find_launcher_processes, std::thread::sleep);
+}
 
 #[cfg(windows)]
 pub fn stop_codex_processes() -> bool {

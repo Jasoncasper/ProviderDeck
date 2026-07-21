@@ -2,8 +2,8 @@ use providerdeck_core::watcher::{
     build_macos_watcher_command, build_macos_watcher_install_plan, build_spawn_launcher_command,
     build_watcher_install_plan, cdp_listening, codex_process_ids, disable_watcher_at,
     enable_watcher_at, filter_killable_launcher_processes, macos_app_process_ids,
-    macos_watcher_needs_reload, should_take_over, wait_for_macos_service_removal_with,
-    wait_for_process_shutdown_with, watcher_disabled_flag,
+    macos_watcher_needs_reload, parse_process_ids, should_take_over,
+    wait_for_macos_service_removal_with, wait_for_process_shutdown_with, watcher_disabled_flag,
 };
 
 #[test]
@@ -166,6 +166,14 @@ fn launcher_process_filter_protects_current_process_ancestry() {
     ];
 
     assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
+}
+
+#[test]
+fn launcher_guard_process_parser_ignores_invalid_and_current_process_ids() {
+    assert_eq!(
+        parse_process_ids("120\ninvalid\n340\n120\n", 340),
+        vec![120]
+    );
 }
 
 #[test]
