@@ -2,6 +2,7 @@
 
 | ProviderDeck | 平台 | App surface | 状态 |
 |---|---|---|---|
+| 1.2.2 | macOS 11+ | ChatGPT 26.715.52143 (build 5591) 内置 Codex app-server | launcher 正确执行代理就绪等待；watcher 在代理不可用或已有 launcher 接管时保留当前 ChatGPT 进程 |
 | 1.2.1 | macOS 11+ | ChatGPT 26.715.52143 (build 5591) 内置 Codex app-server | 启动前等待 VPN/HTTP 代理的 ChatGPT 上游连接就绪，避免远端配置半加载 |
 | 1.2.0 | macOS 11+ | ChatGPT 26.715.31925 (build 5551) 内置 Codex app-server | transport 入站/出站窄钩子；保留原生 `model/list` pending lifecycle；内部 IPC 超时收敛；校验代理上游连接 |
 | 1.0.18 | macOS 11+ | ChatGPT 26.715.31925 (build 5551) 内置 Codex app-server | 模型 descriptor 对齐 build 5551 完整能力字段 |

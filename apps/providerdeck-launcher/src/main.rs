@@ -56,6 +56,7 @@ where
 #[cfg(target_os = "macos")]
 async fn run_watcher(options: LaunchOptions) -> Result<()> {
     let launcher_path = std::env::current_exe().context("failed to resolve watcher executable")?;
+    let hooks = LauncherHooks::default();
     let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
         "watcher.start",
         json!({
@@ -81,20 +82,47 @@ async fn run_watcher(options: LaunchOptions) -> Result<()> {
                 "watcher.takeover_requested",
                 json!({ "chatgpt_process_count": chatgpt_processes.len() }),
             );
-            if providerdeck_core::watcher::stop_codex_processes() {
-                match spawn_managed_launcher(&launcher_path, &options) {
-                    Ok(()) => {
-                        let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
-                            "watcher.takeover_started",
-                            json!({ "debug_port": options.debug_port }),
-                        );
-                    }
-                    Err(error) => {
-                        let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
-                            "watcher.takeover_failed",
-                            json!({ "error": error.to_string() }),
-                        );
-                    }
+            let outcome = attempt_watcher_takeover(
+                || hooks.wait_for_network_ready(),
+                || {
+                    providerdeck_core::watcher::cdp_listening(
+                        providerdeck_core::ports::LAUNCHER_GUARD_PORT,
+                    )
+                },
+                || providerdeck_core::watcher::stop_codex_processes(),
+                || spawn_managed_launcher(&launcher_path, &options),
+            )
+            .await;
+            match outcome {
+                WatcherTakeoverOutcome::Started => {
+                    let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                        "watcher.takeover_started",
+                        json!({ "debug_port": options.debug_port }),
+                    );
+                }
+                WatcherTakeoverOutcome::NetworkUnavailable(error) => {
+                    let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                        "watcher.takeover_deferred",
+                        json!({ "reason": "network_unavailable", "error": error }),
+                    );
+                }
+                WatcherTakeoverOutcome::LauncherAlreadyRunning => {
+                    let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                        "watcher.takeover_deferred",
+                        json!({ "reason": "launcher_already_running" }),
+                    );
+                }
+                WatcherTakeoverOutcome::StopFailed => {
+                    let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                        "watcher.takeover_failed",
+                        json!({ "error": "ChatGPT processes did not stop in time" }),
+                    );
+                }
+                WatcherTakeoverOutcome::LaunchFailed(error) => {
+                    let _ = providerdeck_core::diagnostic_log::append_diagnostic_log(
+                        "watcher.takeover_failed",
+                        json!({ "error": error }),
+                    );
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs_f64(
@@ -107,6 +135,43 @@ async fn run_watcher(options: LaunchOptions) -> Result<()> {
             providerdeck_core::watcher::WATCHER_INTERVAL_SECONDS,
         ))
         .await;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WatcherTakeoverOutcome {
+    Started,
+    NetworkUnavailable(String),
+    LauncherAlreadyRunning,
+    StopFailed,
+    LaunchFailed(String),
+}
+
+async fn attempt_watcher_takeover<WaitNetwork, WaitFuture, LauncherRunning, StopCodex, Spawn>(
+    wait_for_network: WaitNetwork,
+    launcher_running: LauncherRunning,
+    stop_codex: StopCodex,
+    spawn_launcher: Spawn,
+) -> WatcherTakeoverOutcome
+where
+    WaitNetwork: FnOnce() -> WaitFuture,
+    WaitFuture: std::future::Future<Output = anyhow::Result<()>>,
+    LauncherRunning: FnOnce() -> bool,
+    StopCodex: FnOnce() -> bool,
+    Spawn: FnOnce() -> anyhow::Result<()>,
+{
+    if let Err(error) = wait_for_network().await {
+        return WatcherTakeoverOutcome::NetworkUnavailable(error.to_string());
+    }
+    if launcher_running() {
+        return WatcherTakeoverOutcome::LauncherAlreadyRunning;
+    }
+    if !stop_codex() {
+        return WatcherTakeoverOutcome::StopFailed;
+    }
+    match spawn_launcher() {
+        Ok(()) => WatcherTakeoverOutcome::Started,
+        Err(error) => WatcherTakeoverOutcome::LaunchFailed(error.to_string()),
     }
 }
 
@@ -240,6 +305,10 @@ impl LaunchHooks for LauncherHooks {
 
     async fn load_settings(&self) -> anyhow::Result<providerdeck_core::settings::BackendSettings> {
         self.core.load_settings().await
+    }
+
+    async fn wait_for_network_ready(&self) -> anyhow::Result<()> {
+        self.core.wait_for_network_ready().await
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
@@ -432,6 +501,7 @@ fn manager_exe_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn parse_launch_options_accepts_manager_forwarded_ports_and_app_path() {
@@ -479,6 +549,97 @@ mod tests {
         assert!(production.contains("TAKEOVER_FAILURE_BACKOFF_SECONDS"));
     }
 
+    #[tokio::test]
+    async fn watcher_takeover_keeps_chatgpt_running_when_network_is_unavailable() {
+        let stop_called = AtomicBool::new(false);
+        let spawn_called = AtomicBool::new(false);
+
+        let outcome = attempt_watcher_takeover(
+            || async { anyhow::bail!("proxy unavailable") },
+            || false,
+            || {
+                stop_called.store(true, Ordering::SeqCst);
+                true
+            },
+            || {
+                spawn_called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            WatcherTakeoverOutcome::NetworkUnavailable("proxy unavailable".to_string())
+        );
+        assert!(!stop_called.load(Ordering::SeqCst));
+        assert!(!spawn_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn watcher_takeover_rechecks_launcher_guard_after_network_wait() {
+        let stop_called = AtomicBool::new(false);
+        let spawn_called = AtomicBool::new(false);
+
+        let outcome = attempt_watcher_takeover(
+            || async { Ok(()) },
+            || true,
+            || {
+                stop_called.store(true, Ordering::SeqCst);
+                true
+            },
+            || {
+                spawn_called.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, WatcherTakeoverOutcome::LauncherAlreadyRunning);
+        assert!(!stop_called.load(Ordering::SeqCst));
+        assert!(!spawn_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn watcher_takeover_stops_chatgpt_only_after_safety_checks() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let wait_events = Arc::clone(&events);
+        let guard_events = Arc::clone(&events);
+        let stop_events = Arc::clone(&events);
+        let spawn_events = Arc::clone(&events);
+
+        let outcome = attempt_watcher_takeover(
+            || async move {
+                wait_events.lock().unwrap().push("wait-network");
+                Ok(())
+            },
+            || {
+                guard_events.lock().unwrap().push("check-launcher");
+                false
+            },
+            || {
+                stop_events.lock().unwrap().push("stop-chatgpt");
+                true
+            },
+            || {
+                spawn_events.lock().unwrap().push("spawn-launcher");
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, WatcherTakeoverOutcome::Started);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                "wait-network",
+                "check-launcher",
+                "stop-chatgpt",
+                "spawn-launcher"
+            ]
+        );
+    }
+
     #[test]
     fn launcher_uses_single_instance_guard_before_launching() {
         let source = include_str!("main.rs");
@@ -495,6 +656,19 @@ mod tests {
 
         assert!(production.contains("async fn repair_codex_config"));
         assert!(production.contains("self.core.repair_codex_config(helper_port).await"));
+    }
+
+    #[test]
+    fn launcher_delegates_network_readiness_to_core_hooks() {
+        let source = include_str!("main.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let hook_impl = production
+            .split("impl LaunchHooks for LauncherHooks")
+            .nth(1)
+            .unwrap();
+
+        assert!(hook_impl.contains("async fn wait_for_network_ready"));
+        assert!(hook_impl.contains("self.core.wait_for_network_ready().await"));
     }
 
     #[test]
