@@ -176,8 +176,10 @@ async fn http_proxy_upstream_available(proxy: &str) -> bool {
     };
     let Ok(client) = reqwest::Client::builder()
         .proxy(proxy)
-        .connect_timeout(Duration::from_millis(1500))
-        .timeout(Duration::from_secs(2))
+        // connect_timeout 覆盖经 HTTP 代理到目标的 TLS 握手；实测 chatgpt.com 经本地代理握手约 1.5s，
+        // 1500ms 会稳定卡在边界并误报不可用，故放宽到 6s。
+        .connect_timeout(Duration::from_millis(6000))
+        .timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none())
         .build()
     else {

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.5 (2026-07-21)
+
+### 修复
+
+- 放宽启动前代理上游预检的连接超时：`http_proxy_upstream_available` 的 `connect_timeout` 由 1500ms 提升至 6000ms、总超时由 2s 提升至 8s。经 HTTP 代理访问 chatgpt.com 的 TLS 握手实测约 1.5s，原 1500ms 阈值稳定卡在边界，导致代理节点正常时预检仍持续误报"无法建立 ChatGPT 上游连接"而无法重启。
+
 ## v1.2.4 (2026-07-21)
 
 ### 修复

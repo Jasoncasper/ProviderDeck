@@ -2479,7 +2479,7 @@ dependencies = [
 
 [[package]]
 name = "providerdeck-core"
-version = "1.2.4"
+version = "1.2.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2505,7 +2505,7 @@ dependencies = [
 
 [[package]]
 name = "providerdeck-launcher"
-version = "1.2.4"
+version = "1.2.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "providerdeck-manager"
-version = "1.2.4"
+version = "1.2.5"
 dependencies = [
  "anyhow",
  "async-trait",
