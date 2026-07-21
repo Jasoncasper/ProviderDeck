@@ -11,6 +11,9 @@ pub const WATCHER_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Ru
 pub const WATCHER_STARTUP_SHORTCUT_NAME: &str = "ProviderDeckWatcher.lnk";
 pub const MACOS_WATCHER_LABEL: &str = "com.jasoncasper.providerdeck.watcher";
 
+#[cfg(target_os = "macos")]
+static MACOS_WATCHER_INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatcherInstallPlan {
     pub run_value_name: String,
@@ -140,6 +143,30 @@ pub fn build_macos_watcher_install_plan(
     }
 }
 
+pub fn macos_watcher_needs_reload(
+    existing_plist: Option<&str>,
+    desired_plist: &str,
+    service_loaded: bool,
+) -> bool {
+    !service_loaded || existing_plist != Some(desired_plist)
+}
+
+pub fn wait_for_macos_service_removal_with(
+    mut service_loaded: impl FnMut() -> bool,
+    mut sleep: impl FnMut(Duration),
+) -> bool {
+    const MAX_ATTEMPTS: usize = 120;
+    for attempt in 0..MAX_ATTEMPTS {
+        if !service_loaded() {
+            return true;
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            sleep(Duration::from_millis(50));
+        }
+    }
+    false
+}
+
 fn escape_xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -235,6 +262,9 @@ pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<
 
 #[cfg(target_os = "macos")]
 pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<()> {
+    let _install_guard = MACOS_WATCHER_INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let launch_agents_dir = directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join("Library/LaunchAgents"))
         .ok_or_else(|| anyhow::anyhow!("unable to resolve macOS LaunchAgents directory"))?;
@@ -244,6 +274,16 @@ pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<
         debug_port,
     );
     let domain = current_user_launchd_domain()?;
+    let service = format!("{domain}/{}", plan.label);
+    let existing_plist = std::fs::read_to_string(&plan.plist_path).ok();
+    if !macos_watcher_needs_reload(
+        existing_plist.as_deref(),
+        &plan.plist,
+        macos_service_loaded(&service),
+    ) {
+        enable_watcher()?;
+        return Ok(());
+    }
     if let Some(parent) = plan.plist_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -256,10 +296,19 @@ pub fn install_watcher(launcher_path: &Path, debug_port: u16) -> anyhow::Result<
         return Err(error.into());
     }
 
-    let service = format!("{domain}/{}", plan.label);
-    let _ = std::process::Command::new("launchctl")
+    let bootout = std::process::Command::new("launchctl")
         .args(["bootout", &service])
         .output();
+    if !wait_for_macos_service_removal_with(|| macos_service_loaded(&service), std::thread::sleep) {
+        let detail = bootout
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
+            .filter(|detail| !detail.is_empty())
+            .unwrap_or_else(|| "service remained loaded after bootout".to_string());
+        let _ =
+            rollback_macos_watcher_files(&plan.plist_path, &crate::paths::default_app_state_dir());
+        anyhow::bail!("failed to stop existing macOS watcher: {detail}");
+    }
     let output = match std::process::Command::new("launchctl")
         .arg("bootstrap")
         .arg(&domain)
@@ -334,6 +383,15 @@ fn current_user_launchd_domain() -> anyhow::Result<String> {
         anyhow::bail!("invalid current macOS user id");
     }
     Ok(format!("gui/{user_id}"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_service_loaded(service: &str) -> bool {
+    std::process::Command::new("launchctl")
+        .args(["print", service])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn rollback_macos_watcher_files(plist_path: &Path, state_root: &Path) -> std::io::Result<()> {

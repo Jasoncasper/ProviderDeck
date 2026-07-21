@@ -1,7 +1,8 @@
 use providerdeck_core::watcher::{
     build_macos_watcher_command, build_macos_watcher_install_plan, build_spawn_launcher_command,
     build_watcher_install_plan, cdp_listening, codex_process_ids, disable_watcher_at,
-    enable_watcher_at, filter_killable_launcher_processes, macos_app_process_ids, should_take_over,
+    enable_watcher_at, filter_killable_launcher_processes, macos_app_process_ids,
+    macos_watcher_needs_reload, should_take_over, wait_for_macos_service_removal_with,
     wait_for_process_shutdown_with, watcher_disabled_flag,
 };
 
@@ -82,6 +83,30 @@ fn macos_watcher_plan_runs_the_silent_launcher_in_watch_mode() {
         plan.plist
             .contains("<key>SuccessfulExit</key>\n      <false/>")
     );
+}
+
+#[test]
+fn macos_watcher_reuses_an_already_loaded_matching_service() {
+    let plist = "matching plist";
+
+    assert!(!macos_watcher_needs_reload(Some(plist), plist, true));
+    assert!(macos_watcher_needs_reload(Some("old plist"), plist, true));
+    assert!(macos_watcher_needs_reload(Some(plist), plist, false));
+}
+
+#[test]
+fn macos_watcher_waits_for_bootout_cleanup_before_bootstrap() {
+    let observations =
+        std::cell::RefCell::new(std::collections::VecDeque::from([true, true, false]));
+    let sleeps = std::cell::Cell::new(0);
+
+    let removed = wait_for_macos_service_removal_with(
+        || observations.borrow_mut().pop_front().unwrap_or(false),
+        |_| sleeps.set(sleeps.get() + 1),
+    );
+
+    assert!(removed);
+    assert_eq!(sleeps.get(), 2);
 }
 
 #[test]
