@@ -823,6 +823,29 @@ async function establishBinding(harness, model, modelProvider) {
 }
 
 {
+  const harness = await createHarness(async (method, params) => {
+    if (method === "model/list") return { data: [structuredClone(officialModel)] };
+    if (method === "thread/unsubscribe") return { status: "unsubscribed" };
+    if (method === "thread/read") return { thread: { id: params.threadId, model: "gpt-5.4", modelProvider: "openai", status: { type: "idle" } } };
+    if (method === "thread/resume") {
+      return { thread: { id: params.threadId, status: { type: "idle" }, model: params.model, modelProvider: params.modelProvider } };
+    }
+    return {};
+  });
+  requestEvent(harness, 71, "turn/start", {
+    threadId: "thread-resume-in-thread",
+    model: "providerdeck:team_proxy:vendor:model:v2",
+    input: [{ type: "text", text: "switch" }],
+  });
+  await drain();
+  const methods = harness.nativeRequests.map((request) => request.method);
+  assert.deepEqual(methods, ["thread/read", "thread/unsubscribe", "thread/resume", "turn/start"], "switch must succeed when thread/resume echoes model inside result.thread");
+  assert.equal(harness.bridgeCalls.some((call) => call.payload.phase === "rolling_back"), false, "no rollback when resume verification passes via thread fields");
+  const turn = harness.nativeRequests.find((request) => request.id === 71);
+  assert.equal(turn.params.modelProvider, "providerdeck-team_proxy");
+}
+
+{
   const dottedCatalog = structuredClone(catalog);
   dottedCatalog.providers["glm-5.2"] = {
     runtimeProviderId: "providerdeck-pdhex-676c6d2d352e32",

@@ -22,7 +22,7 @@ restore original proxy when needed
 
 compaction 失败或超时会阻止用户 turn 发出，并恢复切换前的 provider。检查结果只包含是否找到 rollout、是否需要 compaction 和最后一个不安全 model，不通过 bridge 返回历史正文；compaction 请求只发往该任务已经使用过的原代理 provider。
 
-验证要求 threadId、model 和 modelProvider 同时匹配。运行中的任务只记录最后一次 pending selection；当前 turn 使用原 provider，完成或 interrupt 进入 idle 后再切换。
+验证要求 threadId、model 和 modelProvider 同时匹配；其中 model/modelProvider 从 `thread/resume` 响应的顶层或 `result.thread` 内读取，与 `thread/read` 响应结构保持一致，以兼容不同 ChatGPT build 的字段位置差异，避免因响应字段位置不同而误判切换失败并触发回滚。运行中的任务只记录最后一次 pending selection；当前 turn 使用原 provider，完成或 interrupt 进入 idle 后再切换。
 
 ProviderDeck 自己发起的 `thread/read`、`thread/unsubscribe`、`thread/resume` 与 `thread/compact/start` 通过已有 native IPC 独立关联响应，不进入 ChatGPT renderer RequestClient。这样被拦截的 `turn/start` 不会与内部切换请求竞争同一个并发调度槽；模型列表、历史列表和普通 ChatGPT 请求仍使用官方 RequestClient。
 

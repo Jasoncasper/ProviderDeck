@@ -299,11 +299,30 @@
   }
 
   function verifyResume(result, threadId, target) {
-    return !!result
-      && result.thread
-      && result.thread.id === threadId
-      && result.model === target.model
-      && result.modelProvider === target.runtimeProviderId;
+    if (!result || !result.thread || result.thread.id !== threadId) return false;
+    // ChatGPT 不同 build 下 thread/resume 响应可能把 model/modelProvider 放在顶层或 result.thread 内
+    // （与 thread/read 响应结构一致），两者都查，避免字段位置差异导致误判切换失败并触发回滚。
+    var resumeModel = result.model || result.thread.model;
+    var resumeProvider = result.modelProvider || result.thread.modelProvider;
+    return resumeModel === target.model && resumeProvider === target.runtimeProviderId;
+  }
+
+  function resumeShape(result) {
+    // 诊断用：记录 thread/resume 响应的实际结构（脱敏），仅在 verifyResume 失败时写入 journal，
+    // 用于定位不同 ChatGPT build 下响应字段位置/回显差异。不含 API key 或 bearer token。
+    if (!result) return { hasResult: false };
+    var thread = result.thread;
+    return {
+      hasResult: true,
+      hasThread: !!thread,
+      threadId: thread && thread.id,
+      model: result.model,
+      modelProvider: result.modelProvider,
+      threadModel: thread && thread.model,
+      threadModelProvider: thread && thread.modelProvider,
+      resultKeys: Object.keys(result),
+      threadKeys: thread ? Object.keys(thread) : [],
+    };
   }
 
   function resumeParams(threadId, target) {
@@ -351,7 +370,11 @@
   async function rebindThread(threadId, target) {
     await sendInternal("thread/unsubscribe", { threadId: threadId });
     var resumed = await sendInternal("thread/resume", resumeParams(threadId, target));
-    if (!verifyResume(resumed, threadId, target)) throw new Error("provider switch verification failed");
+    if (!verifyResume(resumed, threadId, target)) {
+      var error = new Error("provider switch verification failed");
+      error.resumeShape = resumeShape(resumed);
+      throw error;
+    }
     var binding = bindingFromTarget(target);
     threadBindings.set(threadId, binding);
     return binding;
@@ -434,6 +457,7 @@
       await journal({ phase: "stable", threadId: threadId, original: original || null, target: bindingFromTarget(target), error: null });
       return;
     } catch (targetError) {
+      var targetResumeShape = (targetError && targetError.resumeShape) || null;
       await journal({
         phase: "rolling_back",
         threadId: threadId,
@@ -442,7 +466,7 @@
         error: String(targetError && targetError.message || targetError),
       });
       if (!rollbackBinding) {
-        await journal({ phase: "recovery_required", threadId: threadId, original: null, target: bindingFromTarget(target), error: "original binding unavailable" });
+        await journal({ phase: "recovery_required", threadId: threadId, original: null, target: bindingFromTarget(target), error: "original binding unavailable", targetResumeShape: targetResumeShape });
         throw targetError;
       }
       try {
@@ -452,11 +476,15 @@
         var rollbackTarget = targetFromBinding(rollbackBinding);
         if (!rollbackTarget) throw new Error("original provider unavailable");
         var rolledBack = await sendInternal("thread/resume", resumeParams(threadId, rollbackTarget));
-        if (!verifyResume(rolledBack, threadId, rollbackTarget)) throw new Error("provider rollback verification failed");
+        if (!verifyResume(rolledBack, threadId, rollbackTarget)) {
+          var rollbackVerifyError = new Error("provider rollback verification failed");
+          rollbackVerifyError.resumeShape = resumeShape(rolledBack);
+          throw rollbackVerifyError;
+        }
         threadBindings.set(threadId, rollbackBinding);
         await journal({ phase: "failed", threadId: threadId, original: rollbackBinding, target: bindingFromTarget(target), rolledBack: true, error: String(targetError && targetError.message || targetError) });
       } catch (rollbackError) {
-        await journal({ phase: "recovery_required", threadId: threadId, original: rollbackBinding, target: bindingFromTarget(target), error: String(rollbackError && rollbackError.message || rollbackError) });
+        await journal({ phase: "recovery_required", threadId: threadId, original: rollbackBinding, target: bindingFromTarget(target), error: String(rollbackError && rollbackError.message || rollbackError), targetResumeShape: targetResumeShape, rollbackResumeShape: (rollbackError && rollbackError.resumeShape) || null });
       }
       throw targetError;
     }

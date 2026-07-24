@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.6 (2026-07-24)
+
+### 修复
+
+- 修复切换到代理模型时 `verifyResume` 仅检查 `thread/resume` 响应顶层的 `model`/`modelProvider`，而部分 ChatGPT build（如 5591）将这两个字段放在 `result.thread` 内，导致切换被误判失败、自动回滚原 provider 并进入 `recovery_required`，表现为模型选择器选完即回退到上一个、无法选中。改为与 `thread/read` 消费一致，同时读取响应顶层与 `result.thread` 内的字段。
+
 ## v1.2.5 (2026-07-21)
 
 ### 修复
