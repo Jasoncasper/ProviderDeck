@@ -184,6 +184,18 @@ pub async fn prearm_renderer_bridge_interceptor(websocket_url: &str) -> anyhow::
             renderer_bridge_fetch_enable_params(),
         )
         .await?;
+    // 禁用 HTTP 缓存，确保 renderer bundle 必重新请求被 Fetch 拦截 patch
+    // （否则 bundle 缓存命中时不重新请求，transport patch 无法注入）
+    session
+        .send_command(next_message_id(), "Network.enable", json!({}))
+        .await?;
+    session
+        .send_command(
+            next_message_id(),
+            "Network.setCacheDisabled",
+            json!({ "cacheDisabled": true }),
+        )
+        .await?;
     session
         .send_command(
             next_message_id(),

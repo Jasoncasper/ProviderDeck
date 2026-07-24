@@ -207,6 +207,23 @@ async fn prearm_renderer_bridge_interceptor_enables_fetch_before_resuming_withou
         )
         .await;
 
+        let network_enable = recv_json(&mut socket).await;
+        assert_eq!(network_enable["method"], "Network.enable");
+        send_json(
+            &mut socket,
+            json!({ "id": network_enable["id"], "sessionId": "page-session", "result": {} }),
+        )
+        .await;
+
+        let cache_disable = recv_json(&mut socket).await;
+        assert_eq!(cache_disable["method"], "Network.setCacheDisabled");
+        assert_eq!(cache_disable["params"]["cacheDisabled"], true);
+        send_json(
+            &mut socket,
+            json!({ "id": cache_disable["id"], "sessionId": "page-session", "result": {} }),
+        )
+        .await;
+
         let resume = recv_json(&mut socket).await;
         assert_eq!(resume["method"], "Runtime.runIfWaitingForDebugger");
         assert_eq!(resume["sessionId"], "page-session");
