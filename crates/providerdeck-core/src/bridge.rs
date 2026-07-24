@@ -335,6 +335,20 @@ pub async fn evaluate_script_with_await_promise(
         .await
 }
 
+/// 强制页面重载并绕过缓存。当 renderer bundle 在 Fetch 拦截器就绪前已加载完毕、
+/// transport patch 未注入时，用此方法触发 bundle 重新请求，让已就绪的 Fetch
+/// 拦截器拦截并注入 patch。ignoreCache=true 等效 Shift+Ctrl+R 硬重载，
+/// 绕过所有子资源（含 bundle）的 HTTP 缓存。
+pub async fn reload_page_ignore_cache(websocket_url: &str) -> anyhow::Result<()> {
+    let socket = connect_cdp_websocket(websocket_url).await?;
+    let mut session = CdpSession::new(socket);
+    session.send_command(1, "Page.enable", json!({})).await?;
+    session
+        .send_command(2, "Page.reload", json!({ "ignoreCache": true }))
+        .await?;
+    Ok(())
+}
+
 pub async fn add_script_to_new_documents(
     websocket_url: &str,
     script: &str,

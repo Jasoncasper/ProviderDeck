@@ -1201,6 +1201,7 @@ fn ensure_loopback_no_proxy(env: &mut HashMap<String, String>) {
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let mut last_error = None;
     let mut installed = false;
+    let mut reloaded = false;
     for _ in 0..20 {
         if !installed {
             match try_install_bridge(debug_port, helper_port).await {
@@ -1210,6 +1211,28 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
         }
         if installed && renderer_bridge_health_ok(debug_port).await.unwrap_or(false) {
             return Ok(());
+        }
+        if installed && !reloaded {
+            // Bridge 已安装但健康检查失败。最可能的原因是 renderer bundle 在
+            // Fetch 拦截器就绪前已加载完毕（页面非暂停态），transport patch
+            // 从未注入。强制页面重载（绕过缓存）以重新请求 bundle，让已就绪的
+            // Fetch 拦截器拦截并注入 transport patch。重载后 JS 上下文重建，
+            // 需在新文档上重新安装 bridge。
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.reload_for_transport_patch",
+                serde_json::json!({ "debug_port": debug_port, "helper_port": helper_port }),
+            );
+            if let Ok(targets) = crate::cdp::list_targets(debug_port).await {
+                if let Ok(target) = crate::cdp::pick_page_target(&targets) {
+                    if let Some(ws) = target.web_socket_debugger_url.as_deref() {
+                        let _ = crate::bridge::reload_page_ignore_cache(ws).await;
+                    }
+                }
+            }
+            reloaded = true;
+            installed = false;
+            tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+            continue;
         }
         if installed {
             last_error = Some(anyhow::anyhow!(
