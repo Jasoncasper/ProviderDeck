@@ -185,17 +185,24 @@ pub async fn prearm_renderer_bridge_interceptor(websocket_url: &str) -> anyhow::
         )
         .await?;
     // 禁用 HTTP 缓存，确保 renderer bundle 必重新请求被 Fetch 拦截 patch
-    // （否则 bundle 缓存命中时不重新请求，transport patch 无法注入）
+    // （否则 bundle 缓存命中时不重新请求，transport patch 无法注入）。
+    // 用非阻塞发送：Network.enable 会触发大量已完成请求的 catch-up 事件，
+    // 阻塞等待响应会 5s 超时导致整个 prearm 失败。CDP 按顺序处理命令，
+    // setCacheDisabled 仍在 runIfWaitingForDebugger 前生效。
     session
-        .send_command(next_message_id(), "Network.enable", json!({}))
+        .send_command_without_wait(next_message_id(), "Network.enable", json!({}))
         .await?;
     session
-        .send_command(
+        .send_command_without_wait(
             next_message_id(),
             "Network.setCacheDisabled",
             json!({ "cacheDisabled": true }),
         )
         .await?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "renderer_transport.cache_disable_sent",
+        json!({ "session_id": page_session_id }),
+    );
     session
         .send_command(
             next_message_id(),
@@ -548,16 +555,16 @@ where
         method: &str,
         params: Value,
     ) -> anyhow::Result<()> {
+        let mut command = json!({
+            "id": message_id,
+            "method": method,
+            "params": params,
+        });
+        if let Some(session_id) = self.session_id.clone() {
+            command["sessionId"] = Value::String(session_id);
+        }
         self.socket
-            .send(Message::Text(
-                json!({
-                    "id": message_id,
-                    "method": method,
-                    "params": params,
-                })
-                .to_string()
-                .into(),
-            ))
+            .send(Message::Text(command.to_string().into()))
             .await
             .with_context(|| format!("failed to send CDP command {method} id {message_id}"))?;
         Ok(())
