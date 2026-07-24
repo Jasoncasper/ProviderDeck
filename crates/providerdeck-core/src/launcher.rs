@@ -468,7 +468,35 @@ impl LaunchHooks for DefaultLaunchHooks {
         }
 
         if app_dir.extension().and_then(|value| value.to_str()) == Some("app") {
-            let cleanup_policy = if is_macos_app_running(app_dir).await {
+            let already_running = is_macos_app_running(app_dir).await;
+            let cdp_ready = crate::watcher::cdp_listening(debug_port);
+            // 已运行实例若未开启 CDP 调试端口，macOS `open -a` 只会激活旧实例并忽略
+            // --remote-debugging-port，导致注入永远连不上 CDP 并触发回滚关闭。先 quit
+            // 旧实例并等待退出，再以带调试端口的方式重启，确保 CDP 可达。
+            let restarted_for_cdp = already_running && !cdp_ready;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "codex.macos_launch",
+                serde_json::json!({
+                    "debug_port": debug_port,
+                    "already_running": already_running,
+                    "cdp_ready": cdp_ready,
+                    "restarted_for_cdp": restarted_for_cdp
+                }),
+            );
+            if restarted_for_cdp {
+                let _ = run_macos_cleanup_command(
+                    app_dir,
+                    MacosCleanupPolicy::QuitIfNotPreviouslyRunning,
+                )
+                .await;
+                for _ in 0..40 {
+                    if !is_macos_app_running(app_dir).await {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            }
+            let cleanup_policy = if already_running && !restarted_for_cdp {
                 MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning
             } else {
                 MacosCleanupPolicy::QuitIfNotPreviouslyRunning
