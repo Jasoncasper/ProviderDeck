@@ -745,7 +745,7 @@ async fn launch_lifecycle_does_not_apply_active_relay_profile_before_starting_co
 }
 
 #[tokio::test]
-async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails() {
+async fn launch_lifecycle_keeps_codex_running_when_injection_fails() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -753,7 +753,7 @@ async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails(
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let hooks = FakeHooks::new(events.clone()).with_inject_error("inject failed");
 
-    let error = launch_and_inject_with_hooks(
+    let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
             debug_port: 9229,
@@ -763,9 +763,9 @@ async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails(
         &hooks,
     )
     .await
-    .unwrap_err();
+    .expect("launch should succeed even when injection fails");
 
-    assert!(error.to_string().contains("inject failed"));
+    // 注入失败时 ChatGPT 保持运行（官方模型可用），不终止、不清 helper，bridge 由 watchdog 后台重试。
     assert_eq!(
         *events.lock().unwrap(),
         vec![
@@ -779,14 +779,13 @@ async fn launch_lifecycle_writes_failure_and_cleans_helper_when_injection_fails(
             "prearm-finish",
             "inject:9229:57421",
             "prearm-stop",
-            "shutdown-helper:57421",
-            "terminate-codex",
-            "status:failed",
+            "status:running",
         ]
     );
     let status = status_store.load_latest().unwrap().unwrap();
-    assert_eq!(status.status, "failed");
-    assert!(status.message.contains("inject failed"));
+    assert_eq!(status.status, "running");
+    assert!(status.message.contains("bridge injection deferred"));
+    let _ = handle;
 }
 
 #[tokio::test]
@@ -881,7 +880,7 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
 }
 
 #[tokio::test]
-async fn launch_lifecycle_terminates_packaged_process_id_when_injection_fails() {
+async fn launch_lifecycle_keeps_packaged_process_when_injection_fails() {
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -895,7 +894,7 @@ async fn launch_lifecycle_terminates_packaged_process_id_when_injection_fails() 
         })
         .with_inject_error("inject failed");
 
-    let error = launch_and_inject_with_hooks(
+    let handle = launch_and_inject_with_hooks(
         LaunchOptions {
             app_dir: Some(app_dir),
             debug_port: 9229,
@@ -905,15 +904,16 @@ async fn launch_lifecycle_terminates_packaged_process_id_when_injection_fails() 
         &hooks,
     )
     .await
-    .unwrap_err();
+    .expect("launch should succeed even when injection fails");
 
-    assert!(error.to_string().contains("inject failed"));
+    // 注入失败时 packaged 进程不被终止，ChatGPT 保持运行。
     assert!(
-        events
+        !events
             .lock()
             .unwrap()
             .contains(&"terminate-packaged:4242".to_string())
     );
+    let _ = handle;
 }
 
 #[test]

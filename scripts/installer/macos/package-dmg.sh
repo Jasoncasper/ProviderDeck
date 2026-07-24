@@ -35,7 +35,7 @@ prepare_icon() {
   sips -z 512 512 "$ICON_SOURCE" --out "$iconset/icon_512x512.png" >/dev/null
   sips -z 1024 1024 "$ICON_SOURCE" --out "$iconset/icon_512x512@2x.png" >/dev/null
 
-  iconutil -c icns "$iconset" -o "$ICON_ICNS"
+  iconutil -c icns "$iconset" -o "$ICON_ICNS" || cp "$ROOT/apps/providerdeck-manager/src-tauri/icons/icon.icns" "$ICON_ICNS"
 }
 
 create_app() {

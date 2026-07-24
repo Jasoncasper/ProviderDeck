@@ -230,18 +230,52 @@ where
             .await?;
         launched = Some(launch.clone());
 
+        let mut bridge_ready = !settings.enhancements_enabled;
         if settings.enhancements_enabled {
-            hooks.finish_transport_prearm().await?;
-            match hooks.bridge_context(debug_port).await? {
-                Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await?,
-                None => hooks.inject(debug_port, helper_port).await?,
+            // ChatGPT 已启动即可用（官方模型直连不经 helper）。CDP/bridge 注入改为
+            // best-effort：失败不终止 ChatGPT，由 bridge watchdog 后台重试，就绪后
+            // 再启用代理模型路由与轮次切换（保留对话中途切换模型能力）。
+            let injection: anyhow::Result<()> = async {
+                hooks.finish_transport_prearm().await?;
+                match hooks.bridge_context(debug_port).await? {
+                    Some(ctx) => hooks.inject_bridge(debug_port, helper_port, ctx).await?,
+                    None => hooks.inject(debug_port, helper_port).await?,
+                }
+                Ok(())
             }
-            hooks.start_bridge_watchdog(debug_port, helper_port).await?;
+            .await;
+            bridge_ready = injection.is_ok();
+            if let Err(error) = injection {
+                hooks.stop_transport_prearm().await;
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launch.injection_deferred",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port,
+                        "message": error.to_string(),
+                    }),
+                );
+            }
+            // 始终启动 watchdog：首次注入成功则监控保活，失败则持续重试注入。
+            if let Err(error) = hooks.start_bridge_watchdog(debug_port, helper_port).await {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launch.watchdog_start_failed",
+                    serde_json::json!({
+                        "debug_port": debug_port,
+                        "helper_port": helper_port,
+                        "message": error.to_string(),
+                    }),
+                );
+            }
         }
 
         let status = launch_status(
             "running",
-            "ProviderDeck launcher ready",
+            if bridge_ready {
+                "ProviderDeck launcher ready"
+            } else {
+                "ChatGPT running; bridge injection deferred, retrying in background"
+            },
             debug_port,
             helper_port,
             &app_dir,
